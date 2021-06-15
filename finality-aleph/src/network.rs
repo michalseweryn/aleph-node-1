@@ -1,7 +1,7 @@
 use codec::{Decode, Encode};
 use futures::{channel::mpsc, stream::Stream, StreamExt};
 use parking_lot::Mutex;
-use rush::{nodes::NodeIndex, Index, KeyBox as _};
+use rush::{NodeIndex, Index, KeyBox as _, SignatureSet, Data};
 use sc_network::{multiaddr, Event, ExHashT, NetworkService, PeerId as ScPeerId, ReputationChange};
 use sp_runtime::traits::Block as BlockT;
 use std::{
@@ -544,9 +544,11 @@ impl<D: Clone + Encode + Decode, B: BlockT + 'static, N: Network<B> + Clone>
     }
 }
 
-pub(crate) type RushNetworkData<B> = rush::NetworkData<Hasher, <B as BlockT>::Hash, Signature>;
+pub(crate) type RushNetworkData<B> = rush::NetworkData<Hasher, <B as BlockT>::Hash, Signature, SignatureSet<Signature>>;
 
-pub(crate) struct RushNetwork<B: BlockT> {
+pub(crate) struct RushNetwork<B: BlockT> where
+<B as BlockT>::Hash: Data
+{
     inner: GenericNetwork<RushNetworkData<B>>,
 }
 
@@ -557,7 +559,7 @@ impl<B: BlockT> RushNetwork<B> {
 }
 
 #[async_trait::async_trait]
-impl<B: BlockT> rush::Network<Hasher, B::Hash, Signature> for RushNetwork<B> {
+impl<B: BlockT> rush::Network<Hasher, B::Hash, Signature, SignatureSet<Signature>> for RushNetwork<B> {
     type Error = Error;
 
     fn send(&self, data: RushNetworkData<B>, node: NodeIndex) -> Result<(), Self::Error> {

@@ -100,6 +100,7 @@ where
         authorities: session.authorities.clone(),
         id: node_id,
     };
+    let multikeychain = rush::DefaultMultiKeychain::new(keybox);
     let session_id = session.session_id as u64;
     let session_network =
         RushNetwork::<B>::new(session_manager.start_session(SessionId(session_id), keybox.clone()));
@@ -114,7 +115,7 @@ where
     let spawn_clone = spawn_handle.clone();
 
     let task = async move {
-        let member = rush::Member::new(data_io, &keybox, consensus_config);
+        let member = rush::Member::new(data_io, &multikeychain, consensus_config);
 
         member
             .run_session(session_network, spawn_clone, exit_rx)
@@ -272,12 +273,14 @@ where
                     self.handle_proposal(hash, current_stop_h);
                 }
             }
+            println!("before batches");
 
             while self.client.info().finalized_number < current_stop_h {
                 select! {
                     x = proposition_select.next() => {
                         match x {
                             Some((id, batch)) if id == curr_id => {
+                                println!("a batch arrived");
                                 for hash in batch {
                                     self.handle_proposal(hash, current_stop_h);
                                 }

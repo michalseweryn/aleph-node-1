@@ -5,13 +5,7 @@ use parking_lot::Mutex;
 use sc_network::{multiaddr, Event, ExHashT, NetworkService, PeerId as ScPeerId, ReputationChange};
 use sp_runtime::traits::Block as BlockT;
 use std::{
-    borrow::Cow,
-    collections::HashMap,
-    hash::{Hash},
-    iter,
-    marker::PhantomData,
-    pin::Pin,
-    sync::Arc,
+    borrow::Cow, collections::HashMap, hash::Hash, iter, marker::PhantomData, pin::Pin, sync::Arc,
 };
 
 use log::{debug, trace, warn};
@@ -21,8 +15,6 @@ use sp_api::NumberFor;
 use std::{fmt::Debug, future::Future};
 #[cfg(test)]
 mod tests;
-
-
 
 #[derive(PartialEq, Eq, Copy, Clone, Debug, Hash)]
 pub struct PeerId(ScPeerId);
@@ -231,8 +223,6 @@ impl Peers {
     fn get(&self, session_id: SessionId, node_id: NodeIndex) -> Option<&PeerId> {
         self.to_peer.get(&session_id)?.get(&node_id)
     }
-
-
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -242,7 +232,7 @@ enum SessionStatus {
 }
 
 #[derive(Clone, Copy, Encode, Decode, Debug, Eq, PartialEq)]
-pub(crate) enum Recipient<T: Clone + Encode + Decode + Eq+ PartialEq> {
+pub(crate) enum Recipient<T: Clone + Encode + Decode + Eq + PartialEq> {
     All,
     Target(T),
 }
@@ -259,7 +249,6 @@ enum MetaMessage {
     Authentication(AuthData, Signature),
     AuthenticationRequest(SessionId),
 }
-
 
 #[derive(Clone, Encode, Decode, Debug)]
 enum InternalMessage<D: Clone + Encode + Decode> {
@@ -339,7 +328,11 @@ impl<D: Clone + Codec> SessionManager<D> {
     }
 }
 
-pub(crate) struct ConsensusNetwork<D: Clone + Encode + Decode + std::fmt::Debug, B: BlockT, N: Network<B> + Clone> {
+pub(crate) struct ConsensusNetwork<
+    D: Clone + Encode + Decode + std::fmt::Debug,
+    B: BlockT,
+    N: Network<B> + Clone,
+> {
     //TODO: some optimizations can be made by changing Mutex to RwLock
     network: N,
     protocol: Cow<'static, str>,
@@ -387,9 +380,6 @@ where
         self.network
             .send_message(*peer_id, self.protocol.clone(), message.encode());
     }
-
-
-
 
     fn send_to_user(&self, session_id: SessionId, data: D, session_data: &mut SessionData<D>) {
         trace!(target: "afa", "Passing message {:?} to {:?}.", data, session_id);
@@ -464,7 +454,6 @@ where
     }
 
     fn on_incoming_message(&mut self, peer_id: PeerId, raw_message: Vec<u8>) {
-
         use InternalMessage::*;
         match InternalMessage::<D>::decode(&mut &raw_message[..]) {
             Ok(Data(session_id, data)) => {
@@ -509,14 +498,13 @@ where
             }
             Data(session_id, data, recipient) => {
                 trace!(target: "afa", "Number of authenticated peers per session {:?} -- {:?}", session_id, self.peers.peers_authenticated_for(session_id).count());
-                trace!(target: "afa", "Sending data {:?} -- {:?} to {:?}", session_id, data.clone(), recipient);
+                trace!(target: "afa", "Sending data {:?} -- {:?} to {:?}", session_id, data, recipient);
 
                 let message = InternalMessage::Data(session_id, data);
                 match recipient {
                     Recipient::Target(node_id) => {
                         if let Some(peer) = self.peers.get(session_id, node_id) {
                             self.send_message(peer, message);
-
                         } else {
                             trace!(target: "afa", "Unsuccessful send to unauthenticated node {:?} -- message {:?}", node_id, message);
                         }
@@ -527,7 +515,6 @@ where
                         }
                     }
                 }
-
             }
         }
     }

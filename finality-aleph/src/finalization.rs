@@ -5,7 +5,7 @@ use crate::{
 };
 use aleph_bft::{
     rmc::{DoublingDelayScheduler, Message, ReliableMulticast},
-    MultiKeychain,  Signable, SignatureSet,
+    MultiKeychain, Signable, SignatureSet,
 };
 use aleph_primitives::ALEPH_ENGINE_ID;
 use codec::{Codec, Decode, Encode};
@@ -220,7 +220,6 @@ impl<
         self.hash_queue.push_back(hash);
         self.rmc.start_rmc(SignableHash { hash }).await;
         debug!(target: "afa", "Started rmc for block hash {:?}", hash);
-
     }
 
     pub(crate) async fn finish(&mut self) {

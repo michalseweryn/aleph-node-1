@@ -12,11 +12,8 @@ use crate::{
 };
 use aleph_primitives::{AlephSessionApi, Session, ALEPH_ENGINE_ID};
 
-use futures::{
-    channel::mpsc,
-    StreamExt,
-};
-use log::{debug, error, warn, info};
+use futures::{channel::mpsc, StreamExt};
+use log::{debug, error, info, warn};
 
 use parking_lot::Mutex;
 use sc_client_api::backend::Backend;

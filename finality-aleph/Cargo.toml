@@ -21,7 +21,10 @@ prometheus-endpoint = { package = "substrate-prometheus-endpoint", git = "https:
 sp-keystore = { git = "https://github.com/paritytech/substrate.git", rev = "1fa8cf7"}
 sc-network = { git = "https://github.com/paritytech/substrate.git", rev = "1fa8cf7"}
 sc-telemetry = { git = "https://github.com/paritytech/substrate.git", rev = "1fa8cf7"}
-aleph-bft = { git = "https://github.com/Cardinal-Cryptography/AlephBFT.git", rev = "3e2a0d0" }
+
+aleph-bft = { git = "https://github.com/DamianStraszak/rush.git", branch = "testnet-fixes" }
+# aleph-bft = {path = "../../rush"}
+# aleph-bft = { git = "https://github.com/Cardinal-Cryptography/AlephBFT.git", rev = "3e2a0d0" }
 serde = "1.0"
 sc-service = { git = "https://github.com/paritytech/substrate.git", rev = "1fa8cf7"}
 sp-application-crypto = { git = "https://github.com/paritytech/substrate.git", rev = "1fa8cf7"}

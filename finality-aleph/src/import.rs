@@ -126,6 +126,7 @@ where
         if let Some(justification) =
             justifications.and_then(|just| just.into_justification(ALEPH_ENGINE_ID))
         {
+            log::debug!(target: "afa", "Got justification along imported block #{:?}", number);
             match self.send_justification(hash, number, (ALEPH_ENGINE_ID, justification)) {
                 Err(SendJustificationError::Send(_)) => {
                     imported_aux.needs_justification = true;
@@ -163,6 +164,7 @@ where
         number: NumberFor<Block>,
         justification: Justification,
     ) -> Result<(), Self::Error> {
+        log::debug!(target: "afa", "import_justification called on {:?}", justification);
         match self.send_justification(hash, number, justification) {
             Err(SendJustificationError::Send(_)) => Err(ConsensusError::ClientImport(
                 String::from("Could not send justification to ConsensusParty"),

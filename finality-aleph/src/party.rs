@@ -11,13 +11,19 @@ use crate::{
     SessionId, SpawnHandle,
 };
 use aleph_primitives::{AlephSessionApi, Session, ALEPH_ENGINE_ID};
-use futures::{channel::mpsc, stream::FuturesUnordered, FutureExt, StreamExt};
-use log::{debug, error, info};
+
+use futures::{
+    channel::mpsc,
+    StreamExt,
+};
+use log::{debug, error, warn, info};
+
+use parking_lot::Mutex;
 use sc_client_api::backend::Backend;
 use sc_service::SpawnTaskHandle;
 use sp_api::{BlockId, NumberFor};
 use sp_consensus::SelectChain;
-use sp_runtime::traits::Block;
+use sp_runtime::traits::{Block, Header};
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
 pub struct AlephParams<B: Block, N, C, SC> {
@@ -32,6 +38,7 @@ where
     C::Api: aleph_primitives::AlephSessionApi<B, AuthorityId, NumberFor<B>>,
     BE: Backend<B> + 'static,
     SC: SelectChain<B> + 'static,
+    NumberFor<B>: Into<u32>,
 {
     let AlephParams {
         config:
@@ -43,11 +50,21 @@ where
                 auth_keystore,
                 authority,
                 justification_rx,
+                period,
                 ..
             },
     } = aleph_params;
 
-    let handler_rx = run_justification_handler(&spawn_handle.clone().into(), justification_rx);
+    let sessions = Arc::new(Mutex::new(HashMap::new()));
+
+    let handler_rx = run_justification_handler(
+        &spawn_handle.clone().into(),
+        justification_rx,
+        sessions.clone(),
+        auth_keystore.clone(),
+        network.clone(),
+        period,
+    );
     let party = ConsensusParty::new(
         network,
         client,
@@ -56,6 +73,7 @@ where
         auth_keystore,
         authority,
         handler_rx,
+        sessions.clone(),
     );
 
     debug!(target: "afa", "Consensus party has started.");
@@ -70,12 +88,28 @@ fn get_node_index(authorities: &[AuthorityId], my_id: &AuthorityId) -> Option<No
         .map(|id| id.into())
 }
 
-fn run_justification_handler<B: Block>(
+type SessionMap<Block> = HashMap<u32, Session<AuthorityId, NumberFor<Block>>>;
+
+fn run_justification_handler<B: Block, N: network::Network<B> + 'static>(
     spawn_handle: &SpawnHandle,
     justification_rx: mpsc::UnboundedReceiver<JustificationNotification<B>>,
-) -> mpsc::UnboundedReceiver<JustificationNotification<B>> {
+    sessions: Arc<Mutex<SessionMap<B>>>,
+    auth_keystore: AuthorityKeystore,
+    network: N,
+    period: u32,
+) -> mpsc::UnboundedReceiver<JustificationNotification<B>>
+where
+    NumberFor<B>: Into<u32>,
+{
     let (finalization_proposals_tx, finalization_proposals_rx) = mpsc::unbounded();
-    let handler = JustificationHandler::new(finalization_proposals_tx, justification_rx);
+    let handler = JustificationHandler::new(
+        finalization_proposals_tx,
+        justification_rx,
+        sessions,
+        auth_keystore,
+        period,
+        network,
+    );
 
     debug!(target: "afa", "JustificationHandler started");
     spawn_handle
@@ -98,7 +132,7 @@ where
     NumberFor<B>: From<u32>,
 {
     network: N,
-    sessions: HashMap<u32, Session<AuthorityId, NumberFor<B>>>,
+    sessions: Arc<Mutex<SessionMap<B>>>,
     spawn_handle: SpawnHandle,
     client: Arc<C>,
     select_chain: SC,
@@ -110,6 +144,7 @@ where
 
 /// If we are on the authority list for the given session, runs an
 /// AlephBFT task and returns `true` upon completion. Otherwise, immediately returns `false`.
+#[allow(clippy::too_many_arguments)]
 async fn maybe_run_session_as_authority<B, C, BE, SC>(
     authority: AuthorityId,
     auth_keystore: AuthorityKeystore,
@@ -118,6 +153,7 @@ async fn maybe_run_session_as_authority<B, C, BE, SC>(
     session: Session<AuthorityId, NumberFor<B>>,
     spawn_handle: SpawnHandle,
     select_chain: SC,
+    exit_rx: futures::channel::oneshot::Receiver<()>,
 ) -> bool
 where
     B: Block,
@@ -128,11 +164,14 @@ where
 {
     let node_id = match get_node_index(&session.authorities, &authority) {
         Some(node_id) => node_id,
-        None => return false,
+        None => {
+            debug!(target: "afa", "Not an authority, thus not running a session");
+            return false;
+        }
     };
+    debug!(target: "afa", "Running session #{}", session.session_id);
     let current_stop_h = session.stop_h;
     let (ordered_batch_tx, ordered_batch_rx) = mpsc::unbounded();
-    let (exit_tx, exit_rx) = futures::channel::oneshot::channel();
 
     let keybox = KeyBox {
         auth_keystore: auth_keystore.clone(),
@@ -149,6 +188,7 @@ where
     let (aleph_network, rmc_network, forwarder) = split_network(data_network);
 
     spawn_handle.0.spawn("forward-data", forwarder);
+    debug!(target: "afa", "Forwarder for session {} has started.", session_id.0);
 
     let consensus_config = default_aleph_config(
         session.authorities.len().into(),
@@ -166,8 +206,10 @@ where
             let member =
                 aleph_bft::Member::new(data_io, &multikeychain, consensus_config, spawn_handle);
             member.run_session(aleph_network, exit_rx).await;
+            debug!(target: "afa", "Member for session #{} ended running", session_id.0);
         }
     };
+    debug!(target: "afa", "Startin aleph_task for session {}.", session_id.0);
     spawn_handle.0.spawn("aleph/consensus_session", aleph_task);
 
     debug!(target: "afa", "Consensus party #{} has started.", session_id.0);
@@ -175,34 +217,33 @@ where
     let mut aggregator = BlockSignatureAggregator::new(rmc_network, &multikeychain);
 
     let ordered_hashes = ordered_batch_rx.map(futures::stream::iter).flatten();
-    let mut finalizable_chain =
-        chain_extension(ordered_hashes, client.clone(), current_stop_h).fuse();
+    let mut finalizable_chain = chain_extension(ordered_hashes, client.clone())
+        .take_while(|header| std::future::ready(header.number() <= &current_stop_h))
+        .fuse();
 
     loop {
         tokio::select! {
-            hash = finalizable_chain.next(), if !finalizable_chain.is_done() => {
-                if let Some(hash) = hash {
-                    aggregator.start_aggregation(hash).await;
+            header = finalizable_chain.next(), if !finalizable_chain.is_done() => {
+                if let Some(header) = header {
+                    aggregator.start_aggregation(header.hash()).await;
+                    if *header.number() == current_stop_h {
+                        aggregator.finish().await;
+                    }
                 } else {
-                    aggregator.finish().await;
                     debug!(target: "afa", "hashes to sign ended");
                 }
             },
-            multisigned_hash = aggregator.next_multisigned_hash(), if !aggregator.is_finished() => {
-                if let Some((hash, _multisignature)) = multisigned_hash {
-                    // TODO: justify with the multisignature.
-                    finalize_block_as_authority(client.clone(), hash, &auth_keystore);
+            multisigned_hash = aggregator.next_multisigned_hash() => {
+                if let Some((hash, multisignature)) = multisigned_hash {
+                    finalize_block_as_authority(client.clone(), hash, multisignature);
                 } else {
+                    debug!(target: "afa", "the stream of multisigned hashes has ended");
                     break;
                 }
             },
-            else => {
-                debug!(target: "afa", "finished party {:?} with finalized block at {:?}", session_id.0, client.info().finalized_number);
-                break;
-            }
         }
     }
-    exit_tx.send(()).expect("consensus task should not fail");
+    debug!(target: "afa", "Member for session {} ended", session_id.0);
     true
 }
 
@@ -216,6 +257,7 @@ where
     SC: SelectChain<B> + 'static,
     NumberFor<B>: From<u32>,
 {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         network: N,
         client: Arc<C>,
@@ -224,6 +266,7 @@ where
         auth_keystore: AuthorityKeystore,
         authority: AuthorityId,
         finalization_proposals_rx: mpsc::UnboundedReceiver<JustificationNotification<B>>,
+        sessions: Arc<Mutex<SessionMap<B>>>,
     ) -> Self {
         Self {
             network,
@@ -232,8 +275,8 @@ where
             select_chain,
             authority,
             finalization_proposals_rx,
+            sessions,
             spawn_handle: spawn_handle.into(),
-            sessions: HashMap::new(),
             phantom: PhantomData,
         }
     }
@@ -246,6 +289,7 @@ where
             None => 0.into(),
             Some(prev_id) => {
                 self.sessions
+                    .lock()
                     .get(&prev_id)
                     .expect("The current session should be known already")
                     .stop_h
@@ -257,7 +301,7 @@ where
             .current_session(&BlockId::Number(prev_block_number))
         {
             Ok(session) => {
-                self.sessions.insert(session_id, session.clone());
+                self.sessions.lock().insert(session_id, session.clone());
                 session
             }
             _ => {
@@ -271,22 +315,31 @@ where
             let current_stop_h = session.stop_h;
             let finalization_proposals_rx = &mut self.finalization_proposals_rx;
             async move {
-                while client.info().finalized_number < current_stop_h {
-                    if let Some(proposal) = finalization_proposals_rx.next().await {
-                        // TODO: check if we should do this
-                        finalize_block(
-                            client.clone(),
-                            proposal.hash,
-                            proposal.number,
-                            Some((ALEPH_ENGINE_ID, proposal.justification)),
-                        );
-                    } else {
-                        debug!(target: "afa", "the channel of proposed blocks closed unexpectedly");
-                        break;
+                loop {
+                    match finalization_proposals_rx.next().await {
+                        Some(proposal) => {
+                            finalize_block(
+                                client.clone(),
+                                proposal.hash,
+                                proposal.number,
+                                Some((ALEPH_ENGINE_ID, proposal.justification)),
+                            );
+                            if proposal.number == current_stop_h {
+                                debug!(target: "afa", "finalized blocks up to #{}", current_stop_h);
+                                return;
+                            }
+                        }
+                        None => {
+                            warn!(target: "afa", "the channel of block hashes to finalize ended too early");
+                            return;
+                        }
                     }
                 }
             }
         };
+
+        let (exit_tx, exit_rx) = futures::channel::oneshot::channel();
+
         // returns true if we participated in the session
         debug!(target: "afa", "Starting session nr {:?} -- {:?}", session_id, session);
 
@@ -298,20 +351,26 @@ where
             session,
             self.spawn_handle.clone(),
             self.select_chain.clone(),
+            exit_rx,
         );
 
         // We run concurrently `proposal_task` and `session_task` until either
         // * `proposal_tasks` terminates, or
         // * `session_task` terminates AND returns true.
 
-        let tasks: FuturesUnordered<_> = vec![
-            proposals_task.map(|_| true).left_future(),
-            session_task.right_future(),
-        ]
-        .into_iter()
-        .collect();
-
-        tasks.filter(|b| std::future::ready(*b)).next().await;
+        use futures::future::Either::*;
+        futures::pin_mut!(proposals_task);
+        futures::pin_mut!(session_task);
+        // if session task terminates and we didn't participate as an authority, wait until we import blocks for the current session.
+        if let Right((false, proposals_task)) =
+            futures::future::select(proposals_task, session_task).await
+        {
+            proposals_task.await
+        }
+        if exit_tx.send(()).is_ok() {
+            debug!(target: "afa", "terminating the member manually")
+        }
+        debug!(target: "afa", "session #{} of the party completed", session_id);
     }
 
     async fn run(mut self) {

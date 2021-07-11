@@ -1,11 +1,11 @@
 use crate::{
     justification::AlephJustification,
     network::{Recipient, RmcNetwork},
-    AuthorityKeystore, Signature,
+    Signature,
 };
 use aleph_bft::{
     rmc::{DoublingDelayScheduler, Message, ReliableMulticast},
-    MultiKeychain, NodeIndex, Signable, SignatureSet,
+    MultiKeychain,  Signable, SignatureSet,
 };
 use aleph_primitives::ALEPH_ENGINE_ID;
 use codec::{Codec, Decode, Encode};
@@ -27,7 +27,7 @@ use tokio::time::Duration;
 pub(crate) fn finalize_block_as_authority<BE, B, C>(
     client: Arc<C>,
     h: B::Hash,
-    auth_keystore: &AuthorityKeystore,
+    multisignature: SignatureSet<Signature>,
 ) where
     B: Block,
     BE: Backend<B>,
@@ -40,13 +40,14 @@ pub(crate) fn finalize_block_as_authority<BE, B, C>(
             return;
         }
     };
+    debug!(target: "afa", "Finalizing block as authority {:?}", block_number);
     finalize_block(
         client,
         h,
         block_number,
         Some((
             ALEPH_ENGINE_ID,
-            AlephJustification::new::<B>(auth_keystore, h).encode(),
+            AlephJustification::new::<B>(multisignature).encode(),
         )),
     );
 }
@@ -68,7 +69,7 @@ pub(crate) fn finalize_block<BE, B, C>(
         return;
     }
 
-    debug!(target: "afa", "Finalizing block with hash {:?}. Previous best: #{:?}.", hash, status.finalized_number);
+    debug!(target: "afa", "Finalizing block with hash {:?} and number {:?}. Previous best: #{:?}.", hash, block_number, status.finalized_number);
 
     let _update_res = client.lock_import_and_run(|import_op| {
         // NOTE: all other finalization logic should come here, inside the lock
@@ -133,15 +134,13 @@ where
 }
 
 /// Given the hash of the last finalized block, transforms a nonempty stream of (arbitrary) block
-/// hashes into a new chains by doing the following:
+/// headers into a new chains by doing the following:
 ///  (1) greedily filters elements to form a chain consisting of distinct proper descendants of the last finalized block
 ///  (2) inserts missing elements so that each element is followed by its child
-///  (3) stops at an element with number `max_h`
 pub(crate) fn chain_extension<BE, B, C, St>(
     hashes: St,
     client: Arc<C>,
-    max_h: NumberFor<B>,
-) -> impl Stream<Item = B::Hash>
+) -> impl Stream<Item = B::Header>
 where
     B: Block,
     BE: Backend<B>,
@@ -149,16 +148,14 @@ where
     St: Stream<Item = B::Hash> + Unpin,
 {
     let mut last_finalized = client.info().finalized_hash;
-    hashes
-        .flat_map(move |new_hash| {
-            let extension = chain_extension_step(last_finalized, new_hash, client.as_ref());
-            if let Some(header) = extension.back() {
-                last_finalized = header.hash();
-            }
-            futures::stream::iter(extension)
-        })
-        .take_while(move |header| std::future::ready(header.number() <= &max_h))
-        .map(|header| header.hash())
+    hashes.flat_map(move |new_hash| {
+        debug!(target: "afa", "new hash from AlephBFT {}", new_hash);
+        let extension = chain_extension_step(last_finalized, new_hash, client.as_ref());
+        if let Some(header) = extension.back() {
+            last_finalized = header.hash();
+        }
+        futures::stream::iter(extension)
+    })
 }
 
 #[derive(PartialEq, Eq, Hash, Clone, Debug, Encode, Decode)]
@@ -177,7 +174,7 @@ type RmcMessage<B> = Message<SignableHash<<B as Block>::Hash>, Signature, Signat
 /// A wrapper around an RMC returning the signed hashes in the order of the [`ReliableMulticast::start_rmc`] calls.
 pub(crate) struct BlockSignatureAggregator<'a, B: Block, MK: MultiKeychain> {
     messages_for_rmc: mpsc::UnboundedSender<RmcMessage<B>>,
-    messages_from_rmc: mpsc::UnboundedReceiver<(NodeIndex, RmcMessage<B>)>,
+    messages_from_rmc: mpsc::UnboundedReceiver<RmcMessage<B>>,
     signatures: HashMap<B::Hash, MK::PartialMultisignature>,
     hash_queue: VecDeque<B::Hash>,
     network: RmcNetwork<B>,
@@ -195,7 +192,7 @@ impl<
     pub(crate) fn new(network: RmcNetwork<B>, keychain: &'a MK) -> Self {
         let (messages_for_rmc, messages_from_network) = mpsc::unbounded();
         let (messages_for_network, messages_from_rmc) = mpsc::unbounded();
-        let scheduler = DoublingDelayScheduler::new(Duration::from_millis(10));
+        let scheduler = DoublingDelayScheduler::new(Duration::from_millis(500));
         let rmc = ReliableMulticast::new(
             messages_from_network,
             messages_for_network,
@@ -216,25 +213,25 @@ impl<
     }
 
     pub(crate) async fn start_aggregation(&mut self, hash: B::Hash) {
+        debug!(target: "afa", "Started aggregation for block hash {:?}", hash);
         if !self.started_hashes.insert(hash) {
             return;
         }
         self.hash_queue.push_back(hash);
-        self.rmc.start_rmc(SignableHash { hash }).await
+        self.rmc.start_rmc(SignableHash { hash }).await;
+        debug!(target: "afa", "Started rmc for block hash {:?}", hash);
+
     }
 
     pub(crate) async fn finish(&mut self) {
         self.finished = true;
     }
 
-    pub(crate) fn is_finished(&self) -> bool {
-        self.finished
-    }
-
     pub(crate) async fn next_multisigned_hash(
         &mut self,
     ) -> Option<(B::Hash, MK::PartialMultisignature)> {
         loop {
+            debug!(target: "afa", "Entering next_multisigned_hash loop.");
             match self.hash_queue.front() {
                 Some(hash) => {
                     if let Some(multisignature) = self.signatures.remove(hash) {
@@ -254,20 +251,24 @@ impl<
             loop {
                 tokio::select! {
                     multisigned_hash = self.rmc.next_multisigned_hash() => {
+
                             let unchecked = multisigned_hash.into_unchecked();
+                            debug!(target: "afa", "New multisigned_hash {:?}.", unchecked);
                             self.signatures
                                 .insert(unchecked.signable.hash, unchecked.signature);
                             break;
                     }
                     message_from_rmc = self.messages_from_rmc.next() => {
-                        if let Some((i, message_from_rmc)) = message_from_rmc {
-                            self.network.send(message_from_rmc, Recipient::Target(i)).expect("sending message from rmc failed")
+                        debug!(target: "afa", "Our rmc message {:?}.", message_from_rmc);
+                        if let Some(message_from_rmc) = message_from_rmc {
+                            self.network.send(message_from_rmc, Recipient::All).expect("sending message from rmc failed")
                         } else {
                             warn!(target: "afa", "the channel of messages from rmc closed");
                         }
                     }
                     message_from_network = self.network.next() => {
                         if let Some(message_from_network) = message_from_network {
+                            debug!(target: "afa", "Received message for rmc: {:?}", message_from_network);
                             self.messages_for_rmc.unbounded_send(message_from_network).expect("sending message to rmc failed");
                         } else {
                             warn!(target: "afa", "the network channel closed");}
@@ -404,9 +405,10 @@ mod tests {
             blocks[5],
             extra_children[4], // ignored
         ];
-        let extension: Vec<_> = chain_extension(futures::stream::iter(hashes), client, 4)
+        let extension: Vec<_> = chain_extension(futures::stream::iter(hashes), client)
+            .map(|header| header.hash())
             .collect()
             .await;
-        assert!(extension.iter().eq(blocks[1..=4].iter()));
+        assert!(extension.iter().eq(blocks[1..=5].iter()));
     }
 }

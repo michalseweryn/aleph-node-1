@@ -168,7 +168,15 @@ pub fn testnet1_config() -> Result<ChainSpec, String> {
         // Protocol ID
         None,
         // Properties
-        None,
+        Some(
+            [(
+                "tokenSymbol".to_string(),
+                serde_json::Value::String("TZERO".into()),
+            )]
+            .iter()
+            .cloned()
+            .collect(),
+        ),
         // Extensions
         None,
     ))

@@ -114,7 +114,7 @@ pub const VERSION: RuntimeVersion = RuntimeVersion {
 /// up by `pallet_aura` to implement `fn slot_duration()`.
 ///
 /// Change this to adjust the block time.
-pub const MILLISECS_PER_BLOCK: u64 = 4000;
+pub const MILLISECS_PER_BLOCK: u64 = 1000;
 
 pub const SLOT_DURATION: u64 = MILLISECS_PER_BLOCK;
 
@@ -260,7 +260,7 @@ impl_opaque_keys! {
 }
 
 parameter_types! {
-    pub const Period: u32 = 5;
+    pub const Period: u32 = 1<<30;
     pub const Offset: u32 = 0;
 }
 

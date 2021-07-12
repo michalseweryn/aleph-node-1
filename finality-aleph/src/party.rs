@@ -10,6 +10,7 @@ use crate::{
     AuthorityId, AuthorityKeystore, JustificationNotification, KeyBox, MultiKeychain, NodeIndex,
     SessionId, SpawnHandle,
 };
+use aleph_bft::DelayConfig;
 use aleph_primitives::{AlephSessionApi, Session, ALEPH_ENGINE_ID};
 
 use futures::{channel::mpsc, StreamExt};
@@ -21,7 +22,7 @@ use sc_service::SpawnTaskHandle;
 use sp_api::{BlockId, NumberFor};
 use sp_consensus::SelectChain;
 use sp_runtime::traits::{Block, Header};
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc, time::Duration};
 
 pub struct AlephParams<B: Block, N, C, SC> {
     pub config: crate::AlephConfig<B, N, C, SC>,
@@ -184,14 +185,27 @@ where
 
     let (aleph_network, rmc_network, forwarder) = split_network(data_network);
 
-    spawn_handle.0.spawn("forward-data", forwarder);
-    debug!(target: "afa", "Forwarder for session {} has started.", session_id.0);
-
-    let consensus_config = default_aleph_config(
+    let mut consensus_config = default_aleph_config(
         session.authorities.len().into(),
         node_id,
         session_id.0 as u64,
     );
+    consensus_config.max_round = 7000;
+    let unit_creation_delay = Arc::new(|t| {
+        if t == 0 {
+            Duration::from_millis(2000)
+        } else {
+            exponential_slowdown(t, 300.0, 5000, 1.005)
+        }
+    });
+    let unit_broadcast_delay = Arc::new(|t| exponential_slowdown(t, 4000., 0, 2.));
+    let delay_config = DelayConfig {
+        tick_interval: Duration::from_millis(100),
+        requests_interval: Duration::from_millis(3000),
+        unit_broadcast_delay,
+        unit_creation_delay,
+    };
+    consensus_config.delay_config = delay_config;
     let data_io = DataIO {
         select_chain: select_chain.clone(),
         ordered_batch_tx,
@@ -202,7 +216,15 @@ where
         async move {
             let member =
                 aleph_bft::Member::new(data_io, &multikeychain, consensus_config, spawn_handle);
-            member.run_session(aleph_network, exit_rx).await;
+            // run concurrently the forwarder and the member's session, but stop running as soon as the member's session completes.
+            let run_session = member.run_session(aleph_network, exit_rx);
+            futures::pin_mut!(forwarder);
+            futures::pin_mut!(run_session);
+            use futures::future::Either::Left;
+            if let Left((_, run_session)) = futures::future::select(forwarder, run_session).await {
+                debug!(target: "afa", "Forwarder task for session #{} finished, waiting for consensus to finish", session_id.0);
+                run_session.await;
+            }
             debug!(target: "afa", "Member for session #{} ended running", session_id.0);
         }
     };
@@ -387,6 +409,25 @@ where
             self.run_session(&session_manager, curr_id).await
         }
     }
+}
+pub fn exponential_slowdown(
+    t: usize,
+    base_delay: f64,
+    start_exp_delay: usize,
+    exp_base: f64,
+) -> Duration {
+    // This gives:
+    // base_delay, for t <= start_exp_delay,
+    // base_delay * exp_base^(t - start_exp_delay), for t > start_exp_delay.
+    let delay = if t < start_exp_delay {
+        base_delay
+    } else {
+        let power = t - start_exp_delay;
+        base_delay * exp_base.powf(power as f64)
+    };
+    let delay = delay.round() as u64;
+    // the above will make it u64::MAX if it exceeds u64
+    Duration::from_millis(delay)
 }
 
 // TODO: :(

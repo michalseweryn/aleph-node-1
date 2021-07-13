@@ -184,8 +184,6 @@ where
 
     let (aleph_network, rmc_network, forwarder) = split_network(data_network);
 
-    spawn_handle.0.spawn("forward-data", forwarder);
-    debug!(target: "afa", "Forwarder for session {} has started.", session_id.0);
 
     let consensus_config = default_aleph_config(
         session.authorities.len().into(),
@@ -202,7 +200,15 @@ where
         async move {
             let member =
                 aleph_bft::Member::new(data_io, &multikeychain, consensus_config, spawn_handle);
-            member.run_session(aleph_network, exit_rx).await;
+            // run concurrently the forwarder and the member's session, but stop running as soon as the member's session completes.
+            let run_session = member.run_session(aleph_network, exit_rx);
+            futures::pin_mut!(forwarder);
+            futures::pin_mut!(run_session);
+            use futures::future::Either::Left;
+            if let Left((_, run_session)) = futures::future::select(forwarder, run_session).await {
+                debug!(target: "afa", "Forwarder task for session #{} finished, waiting for consensus to finish", session_id.0);
+                run_session.await;
+            }
             debug!(target: "afa", "Member for session #{} ended running", session_id.0);
         }
     };

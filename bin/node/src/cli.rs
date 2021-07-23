@@ -1,4 +1,4 @@
-use sc_cli::{Error, KeystoreParams, RunCmd, SharedParams, SubstrateCli};
+use sc_cli::{Error, KeystoreParams, RunCmd, SharedParams};
 use sc_service::config::{BasePath, KeystoreConfig};
 use std::{collections::HashMap, convert::TryFrom, sync::Arc};
 
@@ -34,7 +34,7 @@ pub struct CLiDevKeys {
 }
 
 impl CLiDevKeys {
-    pub fn run<C: SubstrateCli>(&self, cli: &C) -> Result<(), Error> {
+    pub fn run(&self) -> Result<(), Error> {
         let key_types: Vec<_> = self
             .key_types
             .iter()
@@ -46,7 +46,7 @@ impl CLiDevKeys {
             .zip(vec![vec![]].into_iter().cycle())
             .collect();
         for authority in &crate::chain_spec::LOCAL_AUTHORITIES {
-            let keystore = self.open_keystore(authority, cli)?;
+            let keystore = self.open_keystore(authority)?;
             for &key_type in &key_types {
                 use sp_core::crypto::key_types;
                 match key_type {
@@ -91,11 +91,7 @@ impl CLiDevKeys {
         Ok(())
     }
 
-    fn open_keystore<C: SubstrateCli>(
-        &self,
-        authority: &str,
-        cli: &C,
-    ) -> Result<SyncCryptoStorePtr, Error> {
+    fn open_keystore(&self, authority: &str) -> Result<SyncCryptoStorePtr, Error> {
         let base_path: BasePath = self
             .shared_params
             .base_path()
@@ -103,9 +99,12 @@ impl CLiDevKeys {
             .path()
             .join(authority)
             .into();
-        let chain_id = self.shared_params.chain_id(self.shared_params.is_dev());
-        let chain_spec = cli.load_spec(&chain_id)?;
-        let config_dir = base_path.config_dir(chain_spec.id());
+        let chain_spec_id = if self.shared_params.is_dev() {
+            crate::chain_spec::DEV_CHAIN_SPEC_ID
+        } else {
+            crate::chain_spec::TESTNET_CHAIN_SPEC_ID
+        };
+        let config_dir = base_path.config_dir(chain_spec_id);
 
         match self.keystore_params.keystore_config(&config_dir)? {
             (_, KeystoreConfig::Path { path, password }) => {

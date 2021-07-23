@@ -132,7 +132,7 @@ pub fn run() -> sc_cli::Result<()> {
                 Ok((cmd.run(client, backend), task_manager))
             })
         }
-        Some(Subcommand::DevKeys(cmd)) => cmd.run(&cli),
+        Some(Subcommand::DevKeys(cmd)) => cmd.run(),
         None => {
             let runner = cli.create_runner(&cli.run)?;
             runner.run_node_until_exit(|config| async move {

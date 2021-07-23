@@ -16,6 +16,9 @@ pub(crate) const LOCAL_AUTHORITIES: [&str; 8] = [
     "Damian", "Tomasz", "Zbyszko", "Hansu", "Adam", "Matt", "Antoni", "Michal",
 ];
 
+pub const DEV_CHAIN_SPEC_ID: &str = "dev";
+pub const TESTNET_CHAIN_SPEC_ID: &str = "a0tnet1";
+
 pub(crate) const KEY_PATH: &str = "/tmp/authorities_keys";
 
 /// Specialized `ChainSpec`. This is a specialization of the general Substrate ChainSpec type.
@@ -95,7 +98,7 @@ pub fn development_config() -> Result<ChainSpec, String> {
         // Name
         "AlephZero Development",
         // ID
-        "dev",
+        DEV_CHAIN_SPEC_ID,
         ChainType::Development,
         move || {
             testnet_genesis(
@@ -151,7 +154,7 @@ pub fn testnet1_config() -> Result<ChainSpec, String> {
         // Name
         "Aleph Zero",
         // ID
-        "a0tnet1",
+        TESTNET_CHAIN_SPEC_ID,
         ChainType::Live,
         move || {
             testnet_genesis(
@@ -200,6 +203,7 @@ fn testnet_genesis(
     rich_accounts: Vec<AccountId>,
     _enable_println: bool,
 ) -> GenesisConfig {
+    println!("testnet");
     GenesisConfig {
         frame_system: SystemConfig {
             // Add Wasm runtime to storage.

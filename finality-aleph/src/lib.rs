@@ -238,6 +238,7 @@ pub struct AlephConfig<B: Block, N, C, SC> {
     pub justification_rx: mpsc::UnboundedReceiver<JustificationNotification<B>>,
     pub metrics: Option<Metrics<B::Header>>,
     pub period: SessionPeriod,
+    pub finalized_number: NumberFor<B>,
 }
 
 pub fn run_aleph_consensus<B: Block, BE, C, N, SC>(

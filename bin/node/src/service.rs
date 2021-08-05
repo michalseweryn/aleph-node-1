@@ -9,7 +9,7 @@ use finality_aleph::{
 };
 use futures::channel::mpsc;
 use log::warn;
-use sc_client_api::{CallExecutor, ExecutionStrategy, ExecutorProvider};
+use sc_client_api::{CallExecutor, ExecutionStrategy, ExecutorProvider, HeaderBackend};
 use sc_consensus_aura::{ImportQueueParams, SlotProportion, StartAuraParams};
 use sc_executor::native_executor_instance;
 pub use sc_executor::NativeExecutor;
@@ -179,6 +179,8 @@ pub fn new_full(mut config: Configuration) -> Result<TaskManager, ServiceError> 
         .extra_sets
         .push(finality_aleph::peers_set_config());
 
+    let finalized_number = client.info().finalized_number;
+
     let (network, system_rpc_tx, network_starter) =
         sc_service::build_network(sc_service::BuildNetworkParams {
             config: &config,
@@ -291,6 +293,7 @@ pub fn new_full(mut config: Configuration) -> Result<TaskManager, ServiceError> 
             auth_keystore: AuthorityKeystore::new(authority_id, keystore_container.sync_keystore()),
             justification_rx,
             metrics,
+            finalized_number
         };
         task_manager
             .spawn_essential_handle()

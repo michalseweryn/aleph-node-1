@@ -1,26 +1,12 @@
-use crate::{
-    aggregator::BlockSignatureAggregator,
-    data_io::{refresh_best_chain, DataIO},
-    default_aleph_config,
-    finalization::chain_extension_step,
-    justification::{AlephJustification, JustificationHandler, JustificationNotification},
-    last_block_of_session, network,
-    network::{
-        split_network, ConsensusNetwork, DataNetwork, NetworkData, RmcNetwork, SessionManager,
-    },
-    AuthorityId, AuthorityKeystore, AuthoritySession, Future, KeyBox, Metrics, MultiKeychain,
-    NodeIndex, SessionId, SessionMap, SessionPeriod,
-};
+use crate::{aggregator::BlockSignatureAggregator, data_io::{refresh_best_chain, DataIO}, default_aleph_config, finalization::chain_extension_step, justification::{AlephJustification, JustificationHandler, JustificationNotification}, last_block_of_session, network, network::{
+    split_network, ConsensusNetwork, DataNetwork, NetworkData, RmcNetwork, SessionManager,
+}, AuthorityId, AuthorityKeystore, AuthoritySession, Future, KeyBox, Metrics, MultiKeychain, NodeIndex, SessionId, SessionMap, SessionPeriod, session_id_from_block_num};
 
 use aleph_bft::{DelayConfig, OrderedBatch, SpawnHandle};
 use aleph_primitives::AlephSessionApi;
 use futures_timer::Delay;
 
-use futures::{
-    channel::{mpsc, oneshot},
-    future::select,
-    pin_mut, StreamExt,
-};
+use futures::{channel::{mpsc, oneshot}, future::select, pin_mut, StreamExt, FutureExt};
 use log::{debug, error, info, trace};
 
 use parking_lot::Mutex;
@@ -29,6 +15,7 @@ use sp_api::{BlockId, NumberFor};
 use sp_consensus::SelectChain;
 use sp_runtime::traits::{Block, Header};
 use std::{collections::HashMap, marker::PhantomData, sync::Arc, time::Duration};
+use sp_runtime::traits::Zero;
 
 pub struct AlephParams<B: Block, N, C, SC> {
     pub config: crate::AlephConfig<B, N, C, SC>,
@@ -55,6 +42,7 @@ where
                 justification_rx,
                 metrics,
                 period,
+                finalized_number,
                 ..
             },
     } = aleph_params;
@@ -91,6 +79,7 @@ where
         sessions,
         period,
         spawn_handle: spawn_handle.into(),
+        finalized_number,
         phantom: PhantomData,
     };
 
@@ -155,6 +144,7 @@ where
     phantom: PhantomData<BE>,
     metrics: Option<Metrics<B::Header>>,
     authority_justification_tx: mpsc::UnboundedSender<JustificationNotification<B>>,
+    finalized_number: NumberFor<B>
 }
 
 async fn run_aggregator<B, C, BE>(
@@ -239,15 +229,19 @@ where
     C::Api: aleph_primitives::AlephSessionApi<B>,
     BE: Backend<B> + 'static,
     SC: SelectChain<B> + 'static,
-    NumberFor<B>: From<u32>,
+    NumberFor<B>: From<u32> + Into<u32>,
 {
     async fn run_session_as_authority(
         &self,
         node_id: NodeIndex,
         data_network: DataNetwork<NetworkData<B>>,
         session: AuthoritySession<B>,
+        is_active: bool,
         exit_rx: futures::channel::oneshot::Receiver<()>,
     ) -> impl Future<Output = ()> {
+        if !is_active {
+            return futures::future::ready(()).left_future();
+        }
         debug!(target: "afa", "Authority task {:?}", session.session_id);
 
         let (ordered_batch_tx, ordered_batch_rx) = mpsc::unbounded();
@@ -359,10 +353,10 @@ where
                 debug!(target: "afa", "refresh was closed before terminating it manually: {:?}", e)
             }
             let _ = refresher_handle.await;
-        }
+        }.right_future()
     }
 
-    async fn run_session(&mut self, session_id: SessionId) {
+    async fn run_session(&mut self, session_id: SessionId, is_active: bool) {
         let authorities = {
             if session_id == SessionId(0) {
                 self.client
@@ -416,7 +410,7 @@ where
                 .await;
 
             let authority_task = self
-                .run_session_as_authority(node_id, data_network, session.clone(), exit_authority_rx)
+                .run_session_as_authority(node_id, data_network, session.clone(), is_active, exit_authority_rx)
                 .await;
             self.spawn_handle
                 .spawn("aleph/session_authority", authority_task);
@@ -440,9 +434,11 @@ where
     }
 
     async fn run(mut self) {
-        for curr_id in 0.. {
+        let last_session = session_id_from_block_num::<B>(self.finalized_number + 1u32.into(), self.period);
+        for curr_id in last_session.0.. {
             info!(target: "afa", "Running session {:?}.", curr_id);
-            self.run_session(SessionId(curr_id)).await
+            let is_active = self.finalized_number.is_zero() || curr_id >= last_session.0 + 2;
+            self.run_session(SessionId(curr_id), is_active).await
         }
     }
 }

@@ -661,15 +661,15 @@ impl<B: BlockT> AlephNetwork<B> {
 impl<B: BlockT> aleph_bft::Network<Hasher, B::Hash, Signature, SignatureSet<Signature>>
     for AlephNetwork<B>
 {
-    type Error = Error;
-
-    fn send(&self, data: AlephNetworkData<B>, node: NodeIndex) -> Result<(), Self::Error> {
-        self.inner.send(data, Recipient::Target(node))
-    }
-
-    fn broadcast(&self, data: AlephNetworkData<B>) -> Result<(), Self::Error> {
-        self.inner.send(data, Recipient::All)
-    }
+        fn send(&self, data: AlephNetworkData<B>, recipient: aleph_bft::Recipient) {
+            let recipient = match recipient {
+                    aleph_bft::Recipient::Node(node) => Recipient::Target(node),
+                    aleph_bft::Recipient::Everyone => Recipient::All,
+                };
+            if let Err(e) = self.inner.send(data, recipient) {
+                    log::warn!(target: "afa", "error sending message: {:?}", e);
+                }
+}
 
     async fn next_event(&mut self) -> Option<AlephNetworkData<B>> {
         self.inner.next().await

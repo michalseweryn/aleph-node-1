@@ -506,6 +506,7 @@ pub(crate) fn create_aleph_config(
     let delay_config = DelayConfig {
         tick_interval: Duration::from_millis(100),
         requests_interval: Duration::from_millis(3000),
+        catch_up_delay: Duration::from_millis(10000),
         unit_broadcast_delay,
         unit_creation_delay,
     };

@@ -78,10 +78,10 @@ pub struct ChainParams {
     /// If this argument is not found n_members is used instead to generate a collection of size `n_members`
     /// filled with randomly generated Ids
     #[structopt(long, require_delimiter = true)]
-    account_ids: Option<Vec<String>>,
+    pub account_ids: Option<Vec<String>>,
 
     #[structopt(long)]
-    n_members: Option<u32>,
+    pub n_members: Option<u32>,
 }
 
 impl ChainParams {

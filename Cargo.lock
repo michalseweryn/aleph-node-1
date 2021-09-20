@@ -1448,6 +1448,8 @@ name = "finality-aleph"
 version = "0.3.0"
 dependencies = [
  "aleph-bft",
+ "aleph-node",
+ "aleph-runtime",
  "async-trait",
  "derive_more",
  "env_logger",
@@ -1463,7 +1465,10 @@ dependencies = [
  "rand 0.8.4",
  "sc-block-builder",
  "sc-client-api",
+ "sc-client-db",
  "sc-consensus",
+ "sc-executor",
+ "sc-keystore",
  "sc-network",
  "sc-service",
  "sc-telemetry",

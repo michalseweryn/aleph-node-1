@@ -32,7 +32,7 @@ fn channel<T>() -> Channel<T> {
 }
 
 #[derive(Clone)]
-struct TestNetwork<B: BlockT> {
+pub(crate) struct TestNetwork<B: BlockT> {
     event_sinks: Arc<Mutex<Vec<mpsc::UnboundedSender<Event>>>>,
     oneshot_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
     report_peer: Channel<(PeerId, ReputationChange)>,
@@ -46,7 +46,7 @@ struct TestNetwork<B: BlockT> {
 }
 
 impl<B: BlockT> TestNetwork<B> {
-    fn new(peer_id: PeerId, tx: oneshot::Sender<()>) -> Self {
+    pub(crate) fn new(peer_id: PeerId, tx: oneshot::Sender<()>) -> Self {
         TestNetwork {
             event_sinks: Arc::new(Mutex::new(vec![])),
             oneshot_sender: Arc::new(Mutex::new(Some(tx))),

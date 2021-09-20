@@ -247,7 +247,6 @@ pub fn new_full(mut config: Configuration) -> Result<TaskManager, ServiceError> 
                             *timestamp,
                             raw_slot_duration,
                         );
-
                     Ok((timestamp, slot))
                 },
                 force_authoring,

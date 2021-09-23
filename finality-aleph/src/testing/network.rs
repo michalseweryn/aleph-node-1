@@ -9,6 +9,7 @@ use aleph_bft::{Index, KeyBox as _, NodeIndex};
 use codec::DecodeAll;
 use futures::{
     channel::{mpsc, oneshot},
+    future::{try_join_all, TryJoinAll},
     stream::Stream,
     StreamExt,
 };
@@ -21,46 +22,76 @@ use sp_runtime::traits::Block as BlockT;
 use std::{borrow::Cow, pin::Pin, sync::Arc};
 use substrate_test_runtime::Block;
 
-type Channel<T> = (
-    Arc<Mutex<mpsc::UnboundedSender<T>>>,
-    Arc<Mutex<mpsc::UnboundedReceiver<T>>>,
-);
-
-fn channel<T>() -> Channel<T> {
-    let (tx, rx) = mpsc::unbounded();
-    (Arc::new(Mutex::new(tx)), Arc::new(Mutex::new(rx)))
-}
-
 #[derive(Clone)]
 pub(crate) struct TestNetwork<B: BlockT> {
     event_sinks: Arc<Mutex<Vec<mpsc::UnboundedSender<Event>>>>,
     oneshot_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-    report_peer: Channel<(PeerId, ReputationChange)>,
-    disconnect_peer: Channel<(PeerId, Cow<'static, str>)>,
-    send_message: Channel<(PeerId, Cow<'static, str>, Vec<u8>)>,
-    announce: Channel<(B::Hash, Option<Vec<u8>>)>,
-    add_set_reserved: Channel<(PeerId, Cow<'static, str>)>,
-    remove_set_reserved: Channel<(PeerId, Cow<'static, str>)>,
-    request_justification: Channel<(B::Hash, NumberFor<B>)>,
+    report_peer: mpsc::UnboundedSender<(PeerId, ReputationChange)>,
+    disconnect_peer: mpsc::UnboundedSender<(PeerId, Cow<'static, str>)>,
+    send_message: mpsc::UnboundedSender<(PeerId, Cow<'static, str>, Vec<u8>)>,
+    announce: mpsc::UnboundedSender<(B::Hash, Option<Vec<u8>>)>,
+    add_set_reserved: mpsc::UnboundedSender<(PeerId, Cow<'static, str>)>,
+    remove_set_reserved: mpsc::UnboundedSender<(PeerId, Cow<'static, str>)>,
+    request_justification: mpsc::UnboundedSender<(B::Hash, NumberFor<B>)>,
     peer_id: PeerId,
 }
 
+pub(crate) struct TestNetworkReceivers<B: BlockT> {
+    report_peer: mpsc::UnboundedReceiver<(PeerId, ReputationChange)>,
+    disconnect_peer: mpsc::UnboundedReceiver<(PeerId, Cow<'static, str>)>,
+    send_message: mpsc::UnboundedReceiver<(PeerId, Cow<'static, str>, Vec<u8>)>,
+    announce: mpsc::UnboundedReceiver<(B::Hash, Option<Vec<u8>>)>,
+    add_set_reserved: mpsc::UnboundedReceiver<(PeerId, Cow<'static, str>)>,
+    remove_set_reserved: mpsc::UnboundedReceiver<(PeerId, Cow<'static, str>)>,
+    request_justification: mpsc::UnboundedReceiver<(B::Hash, NumberFor<B>)>,
+}
+
 impl<B: BlockT> TestNetwork<B> {
-    pub(crate) fn new(peer_id: PeerId, tx: oneshot::Sender<()>) -> Self {
-        TestNetwork {
+    pub(crate) fn new(peer_id: PeerId, tx: oneshot::Sender<()>) -> (Self, TestNetworkReceivers<B>) {
+        let report_peer = mpsc::unbounded();
+        let disconnect_peer =  mpsc::unbounded();
+        let send_message = mpsc::unbounded();
+        let announce = mpsc::unbounded();
+        let add_set_reserved = mpsc::unbounded();
+        let remove_set_reserved = mpsc::unbounded();
+        let request_justification = mpsc::unbounded();
+        let network = TestNetwork {
             event_sinks: Arc::new(Mutex::new(vec![])),
             oneshot_sender: Arc::new(Mutex::new(Some(tx))),
-            report_peer: channel(),
-            disconnect_peer: channel(),
-            send_message: channel(),
-            announce: channel(),
-            add_set_reserved: channel(),
-            remove_set_reserved: channel(),
-            request_justification: channel(),
+            report_peer: report_peer.0,
+            disconnect_peer: disconnect_peer.0,
+            send_message: send_message.0,
+            announce: announce.0,
+            add_set_reserved: add_set_reserved.0,
+            remove_set_reserved: remove_set_reserved.0,
+            request_justification: request_justification.0,
             peer_id,
-        }
+        };
+        let receivers = TestNetworkReceivers {
+            report_peer: report_peer.1,
+            disconnect_peer: disconnect_peer.1,
+            send_message: send_message.1,
+            announce: announce.1,
+            add_set_reserved: add_set_reserved.1,
+            remove_set_reserved: remove_set_reserved.1,
+            request_justification: request_justification.1,
+        };
+        (network, receivers)
     }
 }
+
+impl<B: BlockT> TestNetworkReceivers<B> {
+    fn close(mut self) {
+        assert!(self.report_peer.try_next().unwrap().is_none());
+        assert!(self.disconnect_peer.try_next().unwrap().is_none());
+        assert!(self.send_message.try_next().unwrap().is_none());
+        assert!(self.announce.try_next().unwrap().is_none());
+        assert!(self.add_set_reserved.try_next().unwrap().is_none());
+        assert!(self.remove_set_reserved.try_next().unwrap().is_none());
+        assert!(self.request_justification.try_next().unwrap().is_none());
+    }
+}
+
 
 impl<B: BlockT> Network<B> for TestNetwork<B> {
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = Event> + Send>> {
@@ -74,48 +105,36 @@ impl<B: BlockT> Network<B> for TestNetwork<B> {
 
     fn _report_peer(&self, peer_id: PeerId, reputation: ReputationChange) {
         self.report_peer
-            .0
-            .lock()
             .unbounded_send((peer_id, reputation))
             .unwrap();
     }
 
     fn _disconnect_peer(&self, peer_id: PeerId, protocol: Cow<'static, str>) {
         self.disconnect_peer
-            .0
-            .lock()
             .unbounded_send((peer_id, protocol))
             .unwrap();
     }
 
     fn send_message(&self, peer_id: PeerId, protocol: Cow<'static, str>, message: Vec<u8>) {
         self.send_message
-            .0
-            .lock()
             .unbounded_send((peer_id, protocol, message))
             .unwrap();
     }
 
     fn _announce(&self, block: <B as BlockT>::Hash, associated_data: Option<Vec<u8>>) {
         self.announce
-            .0
-            .lock()
             .unbounded_send((block, associated_data))
             .unwrap();
     }
 
     fn add_set_reserved(&self, who: PeerId, protocol: Cow<'static, str>) {
         self.add_set_reserved
-            .0
-            .lock()
             .unbounded_send((who, protocol))
             .unwrap();
     }
 
     fn remove_set_reserved(&self, who: PeerId, protocol: Cow<'static, str>) {
         self.remove_set_reserved
-            .0
-            .lock()
             .unbounded_send((who, protocol))
             .unwrap();
     }
@@ -126,8 +145,6 @@ impl<B: BlockT> Network<B> for TestNetwork<B> {
 
     fn request_justification(&self, hash: &B::Hash, number: NumberFor<B>) {
         self.request_justification
-            .0
-            .lock()
             .unbounded_send((*hash, number))
             .unwrap();
     }
@@ -143,25 +160,86 @@ impl<B: BlockT> TestNetwork<B> {
     // Consumes the network asserting there are no unreceived messages in the channels.
     fn close_channels(self) {
         self.event_sinks.lock().clear();
-        self.report_peer.0.lock().close_channel();
-        assert!(self.report_peer.1.lock().try_next().unwrap().is_none());
-        self.disconnect_peer.0.lock().close_channel();
-        assert!(self.disconnect_peer.1.lock().try_next().unwrap().is_none());
-        self.send_message.0.lock().close_channel();
-        assert!(self.send_message.1.lock().try_next().unwrap().is_none());
-        self.announce.0.lock().close_channel();
-        assert!(self.announce.1.lock().try_next().unwrap().is_none());
-        self.add_set_reserved.0.lock().close_channel();
-        assert!(self.add_set_reserved.1.lock().try_next().unwrap().is_none());
-        self.remove_set_reserved.0.lock().close_channel();
-        assert!(self
-            .remove_set_reserved
-            .1
-            .lock()
-            .try_next()
-            .unwrap()
-            .is_none());
+        self.report_peer.close_channel();
+        self.disconnect_peer.close_channel();
+        self.send_message.close_channel();
+        self.announce.close_channel();
+        self.add_set_reserved.close_channel();
+        self.remove_set_reserved.close_channel();
     }
+}
+
+// A hub which mediates between instances of TestNetwork
+pub(crate) struct TestNetworkHub<B: BlockT> {
+    protocol_name: Cow<'static, str>,
+    networks: Vec<TestNetwork<B>>,
+    receivers: Vec<TestNetworkReceivers<B>>,
+    all_event_streams_created: TryJoinAll<oneshot::Receiver<()>>,
+    peer_ids: Vec<PeerId>,
+}
+
+impl<B: BlockT> TestNetworkHub<B> {
+    pub(crate) fn new(protocol_name: Cow<'static, str>, size: usize) -> Self {
+        let mut networks = Vec::with_capacity(size);
+        let mut all_receivers = Vec::with_capacity(size);
+        let mut rxs = Vec::with_capacity(size);
+        let mut peer_ids = Vec::with_capacity(size);
+        for _ in 0..size {
+            let peer_id = ScPeerId::random().into();
+            let (tx, rx) = oneshot::channel();
+            let (network, receivers) = TestNetwork::new(peer_id, tx);
+            networks.push(network);
+            all_receivers.push(receivers);
+            rxs.push(rx);
+            peer_ids.push(peer_id);
+        }
+        Self {
+            protocol_name,
+            networks,
+            receivers: all_receivers,
+            all_event_streams_created: try_join_all(rxs),
+            peer_ids }
+    }
+
+    pub(crate) fn network(&self, i: usize) -> TestNetwork<B> {
+        self.networks[i].clone()
+    }
+
+    pub(crate) async fn run(mut self) {
+        // wait until an event stream is created for every network
+        self.all_event_streams_created.await.expect("all networks should send confirmations");
+        // initialize connections for the networks
+        for (i, network) in self.networks.iter().enumerate() {
+            for (j, peer_id) in self.peer_ids.iter().enumerate() {
+                if j != i {
+                    network.emit_event(Event::SyncConnected {
+                        remote: peer_id.clone().into()
+                    })
+                }
+            }
+        }
+        use futures::future::select_all;
+        loop {
+            match select_all(self.receivers.iter_mut().map(|receivers| receivers.send_message.next())).await {
+                (Some((recipient, protocol, data)), i, _) => {
+                    assert_eq!(protocol, self.protocol_name);
+                    InternalMessage::<MockData>::decode_all(data.as_slice()).expect("a correct message");
+                    let j = self
+                        .peer_ids
+                        .iter()
+                        .position(|peer_id| *peer_id == recipient)
+                        .expect("message should be sent to a known peer_id");
+                    self.networks[j].emit_event(Event::NotificationsReceived {
+                        remote: self.peer_ids[i].into(),
+                        messages: vec![(self.protocol_name.clone(), data.into())]
+                    })
+                }
+                (None, i, _) => {
+                    panic!("the message stream of network {} ended", i)
+                }}
+        }
+    }
+
 }
 
 struct Authority {
@@ -203,6 +281,7 @@ struct TestData {
     authorities: Vec<Authority>,
     consensus_network_handle: tokio::task::JoinHandle<()>,
     data_network: DataNetwork<MockData>,
+    receivers: TestNetworkReceivers<Block>,
 }
 
 impl TestData {
@@ -212,6 +291,7 @@ impl TestData {
         self.network.close_channels();
         assert!(self.data_network.next().await.is_none());
         self.consensus_network_handle.await.unwrap();
+        self.receivers.close();
     }
 }
 
@@ -226,7 +306,7 @@ async fn prepare_one_session_test_data() -> TestData {
     let peer_id = authorities[0].peer_id;
 
     let (oneshot_tx, oneshot_rx) = oneshot::channel();
-    let network = TestNetwork::<Block>::new(peer_id, oneshot_tx);
+    let (network, receivers) = TestNetwork::<Block>::new(peer_id, oneshot_tx);
     let consensus_network = ConsensusNetwork::<MockData, Block, TestNetwork<Block>>::new(
         network.clone(),
         PROTOCOL_NAME.into(),
@@ -248,17 +328,18 @@ async fn prepare_one_session_test_data() -> TestData {
         authorities,
         consensus_network_handle,
         data_network,
+        receivers,
     }
 }
 
 #[tokio::test]
 async fn test_network_event_sync_connnected() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     data.network.emit_event(Event::SyncConnected {
         remote: bob_peer_id.into(),
     });
-    let (peer_id, protocol) = data.network.add_set_reserved.1.lock().next().await.unwrap();
+    let (peer_id, protocol) = data.receivers.add_set_reserved.next().await.unwrap();
     assert_eq!(peer_id, bob_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
     data.complete().await;
@@ -266,16 +347,14 @@ async fn test_network_event_sync_connnected() {
 
 #[tokio::test]
 async fn test_network_event_sync_disconnected() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let charlie_peer_id = data.authorities[2].peer_id;
     data.network.emit_event(Event::SyncDisconnected {
         remote: charlie_peer_id.into(),
     });
     let (peer_id, protocol) = data
-        .network
+        .receivers
         .remove_set_reserved
-        .1
-        .lock()
         .next()
         .await
         .unwrap();
@@ -286,7 +365,7 @@ async fn test_network_event_sync_disconnected() {
 
 #[tokio::test]
 async fn authenticates_to_connected() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     data.network.emit_event(Event::NotificationStreamOpened {
         remote: bob_peer_id.into(),
@@ -295,10 +374,8 @@ async fn authenticates_to_connected() {
         negotiated_fallback: None,
     });
     let (peer_id, protocol, message) = data
-        .network
+        .receivers
         .send_message
-        .1
-        .lock()
         .next()
         .await
         .expect("got auth message");
@@ -317,7 +394,7 @@ async fn authenticates_to_connected() {
 
 #[tokio::test]
 async fn authenticates_when_requested() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     let auth_message =
         InternalMessage::<MockData>::Meta(MetaMessage::AuthenticationRequest(SessionId(0)))
@@ -329,10 +406,8 @@ async fn authenticates_when_requested() {
         messages,
     });
     let (peer_id, protocol, message) = data
-        .network
+        .receivers
         .send_message
-        .1
-        .lock()
         .next()
         .await
         .expect("got auth message");
@@ -384,7 +459,7 @@ async fn test_network_event_notifications_received() {
 
 #[tokio::test]
 async fn requests_authentication_from_unauthenticated() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     let cur_session_id = SessionId(0);
     let note = vec![157];
@@ -396,10 +471,8 @@ async fn requests_authentication_from_unauthenticated() {
         messages,
     });
     let (peer_id, protocol, message) = data
-        .network
+        .receivers
         .send_message
-        .1
-        .lock()
         .next()
         .await
         .expect("got auth request");
@@ -417,7 +490,7 @@ async fn requests_authentication_from_unauthenticated() {
 
 #[tokio::test]
 async fn test_send() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     let bob_node_id = data.authorities[1].keychain.index();
     let cur_session_id = SessionId(0);
@@ -443,10 +516,8 @@ async fn test_send() {
         negotiated_fallback: None,
     });
     // Wait for acknowledgement that Alice noted Bob's presence.
-    data.network
+    data.receivers
         .send_message
-        .1
-        .lock()
         .next()
         .await
         .expect("got auth message");
@@ -454,7 +525,7 @@ async fn test_send() {
     data.data_network
         .send(note.clone(), Recipient::Target(bob_node_id))
         .expect("sending works");
-    match data.network.send_message.1.lock().next().await {
+    match data.receivers.send_message.next().await {
         Some((peer_id, protocol, message)) => {
             assert_eq!(peer_id, bob_peer_id);
             assert_eq!(protocol, PROTOCOL_NAME);
@@ -473,7 +544,7 @@ async fn test_send() {
 
 #[tokio::test]
 async fn test_broadcast() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let cur_session_id = SessionId(0);
     for i in 1..2 {
         let peer_id = data.authorities[i].peer_id;
@@ -500,10 +571,8 @@ async fn test_broadcast() {
             negotiated_fallback: None,
         });
         // Wait for acknowledgement that Alice noted the nodes presence.
-        data.network
+        data.receivers
             .send_message
-            .1
-            .lock()
             .next()
             .await
             .expect("got auth message");
@@ -513,7 +582,7 @@ async fn test_broadcast() {
         .send(note.clone(), Recipient::All)
         .expect("broadcasting works");
     for _ in 1..2_usize {
-        match data.network.send_message.1.lock().next().await {
+        match data.receivers.send_message.next().await {
             Some((_, protocol, message)) => {
                 assert_eq!(protocol, PROTOCOL_NAME);
                 match InternalMessage::<MockData>::decode_all(message.as_slice()) {

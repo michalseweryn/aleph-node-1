@@ -223,7 +223,7 @@ impl<B: BlockT> TestNetworkHub<B> {
             match select_all(self.receivers.iter_mut().map(|receivers| receivers.send_message.next())).await {
                 (Some((recipient, protocol, data)), i, _) => {
                     assert_eq!(protocol, self.protocol_name);
-                    InternalMessage::<MockData>::decode_all(data.as_slice()).expect("a correct message");
+                    let m = InternalMessage::<MockData>::decode_all(data.as_slice()).expect("a correct message");
                     let j = self
                         .peer_ids
                         .iter()
@@ -236,7 +236,9 @@ impl<B: BlockT> TestNetworkHub<B> {
                 }
                 (None, i, _) => {
                     panic!("the message stream of network {} ended", i)
-                }}
+                }
+            }
+            panic!("message was actually sent");
         }
     }
 

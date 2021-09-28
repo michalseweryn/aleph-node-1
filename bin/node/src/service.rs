@@ -1,5 +1,6 @@
 //! Service and ServiceFactory implementation. Specialized wrapper over substrate service.
 
+
 use aleph_primitives::AlephSessionApi;
 use aleph_runtime::{self, opaque::Block, RuntimeApi};
 use finality_aleph::{
@@ -22,6 +23,9 @@ use sp_runtime::{
     traits::{Block as BlockT, Zero},
 };
 use std::sync::Arc;
+
+#[cfg(test)]
+mod test;
 
 // Our native executor instance.
 native_executor_instance!(

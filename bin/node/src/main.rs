@@ -1,6 +1,6 @@
 mod chain_spec;
 #[macro_use]
-mod service;
+pub(crate) mod service;
 mod cli;
 mod command;
 mod commands;

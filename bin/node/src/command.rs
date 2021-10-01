@@ -23,7 +23,7 @@ use sc_service::PartialComponents;
 pub fn run() -> sc_cli::Result<()> {
     let cli = Cli::from_args();
     match &cli.subcommand {
-        Some(Subcommand::BootstrapChain(cmd)) => cmd.run(),
+        Some(Subcommand::BootstrapChain(cmd)) => cmd.run(std::io::stdout()),
         Some(Subcommand::BootstrapNode(cmd)) => cmd.run(),
         Some(Subcommand::Key(cmd)) => cmd.run(&cli),
         Some(Subcommand::CheckBlock(cmd)) => {

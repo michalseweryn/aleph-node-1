@@ -203,17 +203,16 @@ impl BootstrapNodeCmd {
 
 #[cfg(test)]
 mod tests {
-    use crate::commands::BootstrapChainCmd;
-    use sc_cli::{KeystoreParams, PurgeChainCmd, SharedParams, DatabaseParams, RunCmd, ImportParams, NetworkParams, TransactionPoolParams, WasmExecutionMethod, ExecutionStrategiesParams, PruningParams, SyncMode, NodeKeyParams, NodeKeyType, CliConfiguration};
+    use crate::cli::{Cli, Subcommand};
+    use futures::FutureExt;
+    use sc_cli::CliConfiguration;
+    use sc_cli::SubstrateCli;
+    use sc_service::DatabaseConfig;
+    use sc_service::TaskType;
+    use std::ffi::OsString;
     use std::fs::File;
     use std::iter::Iterator;
-    use crate::cli::{Cli, Subcommand};
-    use std::ffi::OsString;
-    use futures::FutureExt;
-    use sc_cli::SubstrateCli;
     use std::path::PathBuf;
-    use sc_service::TaskType;
-    use sc_service::DatabaseConfig;
 
     fn to_os_string(s: &str) -> OsString {
         let mut os = OsString::new();
@@ -230,65 +229,101 @@ mod tests {
             "5F4H97f7nQovyrbiq4ZetaaviNwThSVcFobcA5aGab6167dK",
         ];
         const BASE_PATH: &str = "/tmp";
-        let cli = Cli::from_iter([
-            "aleph-node", "bootstrap-chain",
-            "--millisecs-per-block", "2000",
-            "--session-period", "40",
-            "--base-path", &BASE_PATH,
-            "--chain-id", "dev",
-            "--account-ids", &ACCOUNT_IDS.join(",")
-        ].iter().cloned().map(to_os_string));
+        let cli = Cli::from_iter(
+            [
+                "aleph-node",
+                "bootstrap-chain",
+                "--millisecs-per-block",
+                "2000",
+                "--session-period",
+                "40",
+                "--base-path",
+                BASE_PATH,
+                "--chain-id",
+                "dev",
+                "--account-ids",
+                &ACCOUNT_IDS.join(","),
+            ]
+            .iter()
+            .cloned()
+            .map(to_os_string),
+        );
         match cli.subcommand.unwrap() {
             Subcommand::BootstrapChain(cmd) => {
-                cmd.run(File::create(&format!("{}/chain_spec.json", BASE_PATH)).unwrap()).unwrap();
-            },
-            _ => unreachable!("the command is bootstrap chain")
+                cmd.run(File::create(&format!("{}/chain_spec.json", BASE_PATH)).unwrap())
+                    .unwrap();
+            }
+            _ => unreachable!("the command is bootstrap chain"),
         };
 
-
         for (i, &account_id) in ACCOUNT_IDS.iter().enumerate() {
-            let cli = Cli::from_iter([
-                "aleph-node",
-                "purge-chain",
-                "--base-path", &format!("{}/{}", BASE_PATH, account_id),
-                "--chain", &format!("{}/chain_spec.json", BASE_PATH),
-                "-y"
-            ].iter().cloned().map(to_os_string));
+            let cli = Cli::from_iter(
+                [
+                    "aleph-node",
+                    "purge-chain",
+                    "--base-path",
+                    &format!("{}/{}", BASE_PATH, account_id),
+                    "--chain",
+                    &format!("{}/chain_spec.json", BASE_PATH),
+                    "-y",
+                ]
+                .iter()
+                .cloned()
+                .map(to_os_string),
+            );
             let cmd = match cli.subcommand.unwrap() {
                 Subcommand::PurgeChain(cmd) => cmd,
-                _ => unreachable!("the command is purge chain")
+                _ => unreachable!("the command is purge chain"),
             };
             cmd.run(DatabaseConfig::RocksDb {
                 path: PathBuf::from(format!("/tmp/{}/db", account_id)),
-                cache_size: 128
-            }).unwrap();
+                cache_size: 128,
+            })
+            .unwrap();
 
-                let cli = Cli::from_iter([
+            let cli = Cli::from_iter(
+                [
                     "aleph-node", // the 0th arg should hopefully be ignored
                     "--validator",
-                    "--chain", &format!("{}/chain_spec.json", BASE_PATH),
-                    "--base-path", &format!("{}/{}", BASE_PATH, account_id),
-                    "--name", account_id,
-                    "--rpc-port", &(9933 + i).to_string(),
-                    "--ws-port", &(9944 + i).to_string(),
-                    "--port", &(30334 + i).to_string(),
-                    "--execution", "Native",
+                    "--chain",
+                    &format!("{}/chain_spec.json", BASE_PATH),
+                    "--base-path",
+                    &format!("{}/{}", BASE_PATH, account_id),
+                    "--name",
+                    account_id,
+                    "--rpc-port",
+                    &(9933 + i).to_string(),
+                    "--ws-port",
+                    &(9944 + i).to_string(),
+                    "--port",
+                    &(30334 + i).to_string(),
+                    "--execution",
+                    "Native",
                     "-lafa=debug",
-                ].iter().cloned().map(to_os_string));
+                ]
+                .iter()
+                .cloned()
+                .map(to_os_string),
+            );
 
-                let tokio_runtime = tokio::runtime::Runtime::new().unwrap();
-                let runtime_handle = tokio_runtime.handle().clone();
+            let tokio_runtime = tokio::runtime::Runtime::new().unwrap();
+            let runtime_handle = tokio_runtime.handle().clone();
 
-                let task_executor = move |fut, task_type| match task_type {
-                    TaskType::Async => runtime_handle.spawn(fut).map(drop),
-                    TaskType::Blocking => runtime_handle
-                        .spawn_blocking(move || futures::executor::block_on(fut))
-                        .map(drop),
-                };
+            let task_executor = move |fut, task_type| match task_type {
+                TaskType::Async => runtime_handle.spawn(fut).map(drop),
+                TaskType::Blocking => runtime_handle
+                    .spawn_blocking(move || futures::executor::block_on(fut))
+                    .map(drop),
+            };
 
-                let config = cli.run.create_configuration(&cli, task_executor.into()).unwrap();
-                let mut task_manager = crate::service::new_full(config).unwrap();
-            tokio_runtime.spawn(async move { task_manager.future().await.unwrap(); });
+            let config = cli
+                .run
+                .create_configuration(&cli, task_executor.into())
+                .unwrap();
+            let mut task_manager = crate::service::new_full(config).unwrap();
+            tokio_runtime.spawn(async move {
+                task_manager.future().await.unwrap();
+            });
         }
     }
 }

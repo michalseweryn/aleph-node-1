@@ -8,115 +8,156 @@ use crate::{
 use aleph_bft::{Index, KeyBox as _, NodeIndex};
 use codec::DecodeAll;
 use futures::{
-    channel::{mpsc, oneshot},
-    stream::Stream,
+    channel::{mpsc},
+    stream::{Stream, SelectAll},
     StreamExt,
 };
-use parking_lot::Mutex;
 use sc_network::{Event, ObservedRole, PeerId as ScPeerId, ReputationChange};
 use sp_api::NumberFor;
 use sp_core::Encode;
 use sp_keystore::{testing::KeyStore, CryptoStore};
 use sp_runtime::traits::Block as BlockT;
 use std::{borrow::Cow, pin::Pin, sync::Arc};
+use std::collections::HashMap;
 use substrate_test_runtime::Block;
 
-type Channel<T> = (
-    Arc<Mutex<mpsc::UnboundedSender<T>>>,
-    Arc<Mutex<mpsc::UnboundedReceiver<T>>>,
-);
-
-fn channel<T>() -> Channel<T> {
-    let (tx, rx) = mpsc::unbounded();
-    (Arc::new(Mutex::new(tx)), Arc::new(Mutex::new(rx)))
+#[derive(Debug)]
+enum TestNetworkCommand<B: BlockT> {
+    ReportPeer(PeerId, ReputationChange),
+    DisconnectPeer(PeerId, Cow<'static, str>),
+    SendMessage(PeerId, Cow<'static, str>, Vec<u8>),
+    Announce(B::Hash, Option<Vec<u8>>),
+    AddSetReserved(PeerId, Cow<'static, str>),
+    RemoveSetReserved(PeerId, Cow<'static, str>),
+    RequestJustification(B::Hash, NumberFor<B>),
 }
+
+impl<B: BlockT> TestNetworkCommand<B> {
+    fn unwrap_send_message(self) -> (PeerId, Cow<'static, str>, Vec<u8>) {
+        match self {
+            TestNetworkCommand::SendMessage(peer_id, protocol, data) => (peer_id, protocol, data),
+            _ => panic!("called `TestNetworkCommand::unwrap_send_message()` on `{:?}`", self)
+        }
+    }
+
+    fn unwrap_add_set_reserved(self) -> (PeerId, Cow<'static, str>) {
+        match self {
+            TestNetworkCommand::AddSetReserved(peer_id, protocol) => (peer_id, protocol),
+            _ => panic!("called `TestNetworkCommand::unwrap_add_set_reserved()` on `{:?}`", self)
+        }
+    }
+
+    fn unwrap_remove_set_reserved(self) -> (PeerId, Cow<'static, str>) {
+        match self {
+            TestNetworkCommand::RemoveSetReserved(peer_id, protocol) => (peer_id, protocol),
+            _ => panic!("called `TestNetworkCommand::unwrap_remove_set_reserved()` on `{:?}`", self)
+        }
+    }
+}
+
+type EventSink = mpsc::UnboundedSender<Event>;
 
 #[derive(Clone)]
 struct TestNetwork<B: BlockT> {
-    event_sinks: Arc<Mutex<Vec<mpsc::UnboundedSender<Event>>>>,
-    oneshot_sender: Arc<Mutex<Option<oneshot::Sender<()>>>>,
-    report_peer: Channel<(PeerId, ReputationChange)>,
-    disconnect_peer: Channel<(PeerId, Cow<'static, str>)>,
-    send_message: Channel<(PeerId, Cow<'static, str>, Vec<u8>)>,
-    announce: Channel<(B::Hash, Option<Vec<u8>>)>,
-    add_set_reserved: Channel<(PeerId, Cow<'static, str>)>,
-    remove_set_reserved: Channel<(PeerId, Cow<'static, str>)>,
-    request_justification: Channel<(B::Hash, NumberFor<B>)>,
+    event_sink_tx: mpsc::UnboundedSender<EventSink>,
+    command_tx: mpsc::UnboundedSender<TestNetworkCommand<B>>,
     peer_id: PeerId,
 }
 
-impl<B: BlockT> TestNetwork<B> {
-    fn new(peer_id: PeerId, tx: oneshot::Sender<()>) -> Self {
-        TestNetwork {
-            event_sinks: Arc::new(Mutex::new(vec![])),
-            oneshot_sender: Arc::new(Mutex::new(Some(tx))),
-            report_peer: channel(),
-            disconnect_peer: channel(),
-            send_message: channel(),
-            announce: channel(),
-            add_set_reserved: channel(),
-            remove_set_reserved: channel(),
-            request_justification: channel(),
-            peer_id,
+struct MemoizingReceiver<T> {
+    data: Vec<T>,
+    rx: mpsc::UnboundedReceiver<T>,
+}
+
+impl<T> MemoizingReceiver<T> {
+    fn new(rx: mpsc::UnboundedReceiver<T>) -> Self {
+        MemoizingReceiver {
+            data: Vec::new(),
+            rx
         }
+    }
+    fn try_fetch_many(&mut self) {
+        while let Ok(Some(item)) = self.rx.try_next() {
+            self.data.push(item);
+        }
+    }
+
+    // await till at least one element is received
+    async fn first(&mut self) {
+        if !self.data.is_empty() {
+            return;
+        }
+        let item = self.rx.next().await.unwrap();
+        self.data.push(item);
+    }
+
+    fn iter(&mut self) -> impl Iterator<Item=&T> {
+        self.try_fetch_many();
+        self.data.iter()
+    }
+}
+
+struct TestNetworkReceivers<B: BlockT> {
+    event_sinks: MemoizingReceiver<EventSink>,
+    command_rx: mpsc::UnboundedReceiver<TestNetworkCommand<B>>,
+}
+
+impl<B: BlockT> TestNetwork<B> {
+    fn new(peer_id: PeerId) -> (Self, TestNetworkReceivers<B>) {
+        let (event_sink_tx, event_sink_rx) = mpsc::unbounded();
+        let (command_tx, command_rx) = mpsc::unbounded();
+        let network = TestNetwork {
+            event_sink_tx,
+            command_tx,
+            peer_id,
+        };
+        let receivers = TestNetworkReceivers {
+            event_sinks: MemoizingReceiver::new(event_sink_rx),
+            command_rx,
+        };
+        (network, receivers)
     }
 }
 
 impl<B: BlockT> Network<B> for TestNetwork<B> {
     fn event_stream(&self) -> Pin<Box<dyn Stream<Item = Event> + Send>> {
         let (tx, rx) = mpsc::unbounded();
-        self.event_sinks.lock().push(tx);
-        if let Some(tx) = self.oneshot_sender.lock().take() {
-            tx.send(()).unwrap();
-        }
+        self.event_sink_tx.unbounded_send(tx).unwrap();
         Box::pin(rx)
     }
 
     fn _report_peer(&self, peer_id: PeerId, reputation: ReputationChange) {
-        self.report_peer
-            .0
-            .lock()
-            .unbounded_send((peer_id, reputation))
+        self.command_tx
+            .unbounded_send(TestNetworkCommand::ReportPeer(peer_id, reputation))
             .unwrap();
     }
 
     fn _disconnect_peer(&self, peer_id: PeerId, protocol: Cow<'static, str>) {
-        self.disconnect_peer
-            .0
-            .lock()
-            .unbounded_send((peer_id, protocol))
+        self.command_tx
+            .unbounded_send(TestNetworkCommand::DisconnectPeer(peer_id, protocol))
             .unwrap();
     }
 
     fn send_message(&self, peer_id: PeerId, protocol: Cow<'static, str>, message: Vec<u8>) {
-        self.send_message
-            .0
-            .lock()
-            .unbounded_send((peer_id, protocol, message))
+        self.command_tx
+            .unbounded_send(TestNetworkCommand::SendMessage(peer_id, protocol, message))
             .unwrap();
     }
 
     fn _announce(&self, block: <B as BlockT>::Hash, associated_data: Option<Vec<u8>>) {
-        self.announce
-            .0
-            .lock()
-            .unbounded_send((block, associated_data))
+        self.command_tx.unbounded_send(TestNetworkCommand::Announce(block, associated_data))
             .unwrap();
     }
 
     fn add_set_reserved(&self, who: PeerId, protocol: Cow<'static, str>) {
-        self.add_set_reserved
-            .0
-            .lock()
-            .unbounded_send((who, protocol))
+        self.command_tx
+            .unbounded_send(TestNetworkCommand::AddSetReserved(who, protocol))
             .unwrap();
     }
 
     fn remove_set_reserved(&self, who: PeerId, protocol: Cow<'static, str>) {
-        self.remove_set_reserved
-            .0
-            .lock()
-            .unbounded_send((who, protocol))
+        self.command_tx
+            .unbounded_send(TestNetworkCommand::RemoveSetReserved(who, protocol))
             .unwrap();
     }
 
@@ -125,48 +166,72 @@ impl<B: BlockT> Network<B> for TestNetwork<B> {
     }
 
     fn request_justification(&self, hash: &B::Hash, number: NumberFor<B>) {
-        self.request_justification
-            .0
-            .lock()
-            .unbounded_send((*hash, number))
+        self.command_tx
+            .unbounded_send(TestNetworkCommand::RequestJustification(*hash, number))
             .unwrap();
     }
 }
 
-impl<B: BlockT> TestNetwork<B> {
-    fn emit_event(&self, event: Event) {
-        for sink in &*self.event_sinks.lock() {
-            sink.unbounded_send(event.clone()).unwrap();
+impl<B: BlockT> TestNetworkReceivers<B> {
+    fn send_event(&mut self, event: Event) {
+        for event_sink in self.event_sinks.iter() {
+            event_sink.unbounded_send(event.clone()).unwrap()
+        }
+    }
+    async fn next_command(&mut self) -> TestNetworkCommand<B> {
+        self.command_rx.next().await.unwrap()
+    }
+    async fn first_event_sink(&mut self) {
+        self.event_sinks.first().await;
+    }
+}
+
+pub(crate) struct TestNetworkHub<B: BlockT> {
+    all_receivers: HashMap<PeerId, TestNetworkReceivers<B>>,
+}
+
+impl<B: BlockT> TestNetworkHub<B> {
+    pub(crate) fn new(n: usize) -> (Self, Vec<TestNetwork<B>>) {
+        let peer_ids : Vec<PeerId> = (0..n).map(|_| ScPeerId::random().into()).collect();
+        let (networks, all_receivers) = peer_ids.iter().cloned().map(|peer_id| {
+            let (network, receivers) = TestNetwork::new(peer_id);
+            (network, (peer_id, receivers))
+        }).unzip();
+        let hub = TestNetworkHub {
+            all_receivers,
+        };
+        (hub, networks)
+    }
+    pub(crate) async fn run(self) {
+        let (mut all_event_sinks, mut peers_commands) : (HashMap<_, _>, SelectAll<_>) =
+            self.all_receivers
+                .into_iter()
+                .map(|(peer_id, receivers)| {
+                    (
+                        (peer_id, receivers.event_sinks),
+                        receivers.command_rx.map(move |cmd| (peer_id.clone(), cmd))
+                    )
+                }).unzip();
+        while let Some((sender, cmd))  = peers_commands.next().await {
+            match cmd {
+                TestNetworkCommand::SendMessage(recipient, protocol, data) => {
+                    for event_sink in all_event_sinks.get_mut(&recipient).unwrap().iter() {
+                        event_sink.unbounded_send(Event::NotificationsReceived {
+                            remote: sender.into(),
+                            messages: vec![(protocol.clone(), data.clone().into())]
+                        }).unwrap();
+                    }
+                }
+                _ => {}
+            }
         }
     }
 
-    // Consumes the network asserting there are no unreceived messages in the channels.
-    fn close_channels(self) {
-        self.event_sinks.lock().clear();
-        self.report_peer.0.lock().close_channel();
-        assert!(self.report_peer.1.lock().try_next().unwrap().is_none());
-        self.disconnect_peer.0.lock().close_channel();
-        assert!(self.disconnect_peer.1.lock().try_next().unwrap().is_none());
-        self.send_message.0.lock().close_channel();
-        assert!(self.send_message.1.lock().try_next().unwrap().is_none());
-        self.announce.0.lock().close_channel();
-        assert!(self.announce.1.lock().try_next().unwrap().is_none());
-        self.add_set_reserved.0.lock().close_channel();
-        assert!(self.add_set_reserved.1.lock().try_next().unwrap().is_none());
-        self.remove_set_reserved.0.lock().close_channel();
-        assert!(self
-            .remove_set_reserved
-            .1
-            .lock()
-            .try_next()
-            .unwrap()
-            .is_none());
-    }
 }
 
 struct Authority {
     peer_id: PeerId,
-    keychain: MultiKeychain,
+    keychain: MultiKeychain
 }
 
 async fn generate_authorities(ss: &[String]) -> Vec<Authority> {
@@ -179,7 +244,7 @@ async fn generate_authorities(ss: &[String]) -> Vec<Authority> {
             .unwrap();
         auth_ids.push(AuthorityId::from(pk));
     }
-    let mut result = Vec::with_capacity(ss.len());
+    let mut authorities = Vec::with_capacity(ss.len());
     for i in 0..ss.len() {
         let keybox = KeyBox {
             id: NodeIndex(i),
@@ -187,33 +252,22 @@ async fn generate_authorities(ss: &[String]) -> Vec<Authority> {
             authorities: auth_ids.clone(),
         };
         let keychain = MultiKeychain::new(keybox);
-        result.push(Authority {
-            peer_id: ScPeerId::random().into(),
-            keychain,
-        });
+        authorities.push(Authority { peer_id: ScPeerId::random().into(), keychain });
     }
     assert_eq!(key_store.keys(KEY_TYPE).await.unwrap().len(), 3 * ss.len());
-    result
+    authorities
 }
 
 type MockData = Vec<u8>;
 
 struct TestData {
     network: TestNetwork<Block>,
+    receivers: TestNetworkReceivers<Block>,
     authorities: Vec<Authority>,
-    consensus_network_handle: tokio::task::JoinHandle<()>,
+    _consensus_network_handle: tokio::task::JoinHandle<()>,
     data_network: DataNetwork<MockData>,
 }
 
-impl TestData {
-    // consumes the test data asserting there are no unread messages in the channels
-    // and awaits for the consensus_network task.
-    async fn complete(mut self) {
-        self.network.close_channels();
-        assert!(self.data_network.next().await.is_none());
-        self.consensus_network_handle.await.unwrap();
-    }
-}
 
 const PROTOCOL_NAME: &str = "/test/1";
 
@@ -225,8 +279,7 @@ async fn prepare_one_session_test_data() -> TestData {
     let authorities = generate_authorities(authority_names.as_slice()).await;
     let peer_id = authorities[0].peer_id;
 
-    let (oneshot_tx, oneshot_rx) = oneshot::channel();
-    let network = TestNetwork::<Block>::new(peer_id, oneshot_tx);
+    let (network, mut receivers) = TestNetwork::<Block>::new(peer_id);
     let consensus_network = ConsensusNetwork::<MockData, Block, TestNetwork<Block>>::new(
         network.clone(),
         PROTOCOL_NAME.into(),
@@ -241,67 +294,54 @@ async fn prepare_one_session_test_data() -> TestData {
     let consensus_network_handle = tokio::spawn(async move { consensus_network.run().await });
 
     // wait till consensus_network takes the event_stream
-    oneshot_rx.await.unwrap();
+    receivers.first_event_sink().await;
 
     TestData {
         network,
+        receivers,
         authorities,
-        consensus_network_handle,
+        _consensus_network_handle: consensus_network_handle,
         data_network,
     }
 }
 
 #[tokio::test]
 async fn test_network_event_sync_connnected() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
-    data.network.emit_event(Event::SyncConnected {
+    data.receivers.send_event(Event::SyncConnected {
         remote: bob_peer_id.into(),
     });
-    let (peer_id, protocol) = data.network.add_set_reserved.1.lock().next().await.unwrap();
+    let (peer_id, protocol) = data.receivers.next_command().await.unwrap_add_set_reserved();
     assert_eq!(peer_id, bob_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }
 
 #[tokio::test]
 async fn test_network_event_sync_disconnected() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let charlie_peer_id = data.authorities[2].peer_id;
-    data.network.emit_event(Event::SyncDisconnected {
+    data.receivers.send_event(Event::SyncDisconnected {
         remote: charlie_peer_id.into(),
     });
-    let (peer_id, protocol) = data
-        .network
-        .remove_set_reserved
-        .1
-        .lock()
-        .next()
-        .await
-        .unwrap();
+    let (peer_id, protocol) = data.receivers.next_command().await.unwrap_remove_set_reserved();
     assert_eq!(peer_id, charlie_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }
 
 #[tokio::test]
 async fn authenticates_to_connected() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
-    data.network.emit_event(Event::NotificationStreamOpened {
+    data.receivers.send_event(Event::NotificationStreamOpened {
         remote: bob_peer_id.into(),
         protocol: Cow::Borrowed(PROTOCOL_NAME),
         role: ObservedRole::Authority,
         negotiated_fallback: None,
     });
-    let (peer_id, protocol, message) = data
-        .network
-        .send_message
-        .1
-        .lock()
-        .next()
-        .await
-        .expect("got auth message");
+    let (peer_id, protocol, message) = data.receivers.next_command().await.unwrap_send_message();
     let alice_peer_id = data.authorities[0].peer_id;
     assert_eq!(peer_id, bob_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
@@ -312,30 +352,23 @@ async fn authenticates_to_connected() {
     } else {
         panic!("Expected an authentication message.")
     }
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }
 
 #[tokio::test]
 async fn authenticates_when_requested() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     let auth_message =
         InternalMessage::<MockData>::Meta(MetaMessage::AuthenticationRequest(SessionId(0)))
             .encode();
     let messages = vec![(PROTOCOL_NAME.into(), auth_message.into())];
 
-    data.network.emit_event(Event::NotificationsReceived {
+    data.receivers.send_event(Event::NotificationsReceived {
         remote: bob_peer_id.into(),
         messages,
     });
-    let (peer_id, protocol, message) = data
-        .network
-        .send_message
-        .1
-        .lock()
-        .next()
-        .await
-        .expect("got auth message");
+    let (peer_id, protocol, message) = data.receivers.next_command().await.unwrap_send_message();
     let alice_peer_id = data.authorities[0].peer_id;
     assert_eq!(peer_id, bob_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
@@ -346,7 +379,7 @@ async fn authenticates_when_requested() {
     } else {
         panic!("Expected an authentication message.")
     }
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }
 
 #[tokio::test]
@@ -370,7 +403,7 @@ async fn test_network_event_notifications_received() {
         (PROTOCOL_NAME.into(), message.clone().into()),
     ];
 
-    data.network.emit_event(Event::NotificationsReceived {
+    data.receivers.send_event(Event::NotificationsReceived {
         remote: bob_peer_id.into(),
         messages,
     });
@@ -379,30 +412,23 @@ async fn test_network_event_notifications_received() {
     } else {
         panic!("expected message received nothing")
     }
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }
 
 #[tokio::test]
 async fn requests_authentication_from_unauthenticated() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     let cur_session_id = SessionId(0);
     let note = vec![157];
     let message = InternalMessage::Data(cur_session_id, note).encode();
     let messages = vec![(PROTOCOL_NAME.into(), message.into())];
 
-    data.network.emit_event(Event::NotificationsReceived {
+    data.receivers.send_event(Event::NotificationsReceived {
         remote: bob_peer_id.into(),
         messages,
     });
-    let (peer_id, protocol, message) = data
-        .network
-        .send_message
-        .1
-        .lock()
-        .next()
-        .await
-        .expect("got auth request");
+    let (peer_id, protocol, message) = data.receivers.next_command().await.unwrap_send_message();
     assert_eq!(peer_id, bob_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
     let message =
@@ -412,12 +438,12 @@ async fn requests_authentication_from_unauthenticated() {
     } else {
         panic!("Expected an authentication request.")
     }
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }
 
 #[tokio::test]
 async fn test_send() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let bob_peer_id = data.authorities[1].peer_id;
     let bob_node_id = data.authorities[1].keychain.index();
     let cur_session_id = SessionId(0);
@@ -432,30 +458,24 @@ async fn test_send() {
             .encode();
     let messages = vec![(PROTOCOL_NAME.into(), auth_message.into())];
 
-    data.network.emit_event(Event::NotificationsReceived {
+    data.receivers.send_event(Event::NotificationsReceived {
         remote: bob_peer_id.into(),
         messages,
     });
-    data.network.emit_event(Event::NotificationStreamOpened {
+    data.receivers.send_event(Event::NotificationStreamOpened {
         remote: bob_peer_id.into(),
         protocol: Cow::Borrowed(PROTOCOL_NAME),
         role: ObservedRole::Authority,
         negotiated_fallback: None,
     });
     // Wait for acknowledgement that Alice noted Bob's presence.
-    data.network
-        .send_message
-        .1
-        .lock()
-        .next()
-        .await
-        .expect("got auth message");
+    data.receivers.next_command().await.unwrap_send_message();
+
     let note = vec![157];
     data.data_network
         .send(note.clone(), Recipient::Target(bob_node_id))
         .expect("sending works");
-    match data.network.send_message.1.lock().next().await {
-        Some((peer_id, protocol, message)) => {
+    let (peer_id, protocol, message) = data.receivers.next_command().await.unwrap_send_message();
             assert_eq!(peer_id, bob_peer_id);
             assert_eq!(protocol, PROTOCOL_NAME);
             match InternalMessage::<MockData>::decode_all(message.as_slice()) {
@@ -465,15 +485,12 @@ async fn test_send() {
                 }
                 _ => panic!("Expected a properly encoded message"),
             }
-        }
-        _ => panic!("Expecting a message"),
-    }
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }
 
 #[tokio::test]
 async fn test_broadcast() {
-    let data = prepare_one_session_test_data().await;
+    let mut data = prepare_one_session_test_data().await;
     let cur_session_id = SessionId(0);
     for i in 1..2 {
         let peer_id = data.authorities[i].peer_id;
@@ -489,43 +506,34 @@ async fn test_broadcast() {
                 .encode();
         let messages = vec![(PROTOCOL_NAME.into(), auth_message.into())];
 
-        data.network.emit_event(Event::NotificationsReceived {
+        data.receivers.send_event(Event::NotificationsReceived {
             remote: peer_id.0,
             messages,
         });
-        data.network.emit_event(Event::NotificationStreamOpened {
+        data.receivers.send_event(Event::NotificationStreamOpened {
             remote: peer_id.0,
             protocol: Cow::Borrowed(PROTOCOL_NAME),
             role: ObservedRole::Authority,
             negotiated_fallback: None,
         });
+
         // Wait for acknowledgement that Alice noted the nodes presence.
-        data.network
-            .send_message
-            .1
-            .lock()
-            .next()
-            .await
-            .expect("got auth message");
+        data.receivers.next_command().await.unwrap_send_message();
     }
     let note = vec![157];
     data.data_network
         .send(note.clone(), Recipient::All)
         .expect("broadcasting works");
     for _ in 1..2_usize {
-        match data.network.send_message.1.lock().next().await {
-            Some((_, protocol, message)) => {
-                assert_eq!(protocol, PROTOCOL_NAME);
-                match InternalMessage::<MockData>::decode_all(message.as_slice()) {
+        let (_, protocol, message) = data.receivers.next_command().await.unwrap_send_message();
+        assert_eq!(protocol, PROTOCOL_NAME);
+        match InternalMessage::<MockData>::decode_all(message.as_slice()) {
                     Ok(InternalMessage::Data(session_id, data)) => {
                         assert_eq!(session_id, cur_session_id);
                         assert_eq!(data, note);
                     }
                     _ => panic!("Expected a properly encoded message"),
-                }
-            }
-            _ => panic!("Expecting a message"),
         }
     }
-    data.complete().await;
+    assert!(data.receivers.command_rx.try_next().is_err());
 }

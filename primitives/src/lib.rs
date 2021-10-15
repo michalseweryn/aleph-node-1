@@ -11,7 +11,7 @@ pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"alp0");
 // TODO: change this once https://github.com/paritytech/substrate/issues/8172 will be resolved.
 pub const ALEPH_ENGINE_ID: ConsensusEngineId = *b"FRNK";
 
-mod app {
+pub mod app {
     use sp_application_crypto::{app_crypto, ed25519};
     app_crypto!(ed25519, crate::KEY_TYPE);
 }

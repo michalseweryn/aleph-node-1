@@ -4,14 +4,16 @@ use codec::{Decode, Encode};
 
 pub use aleph_bft::default_config as default_aleph_config;
 use aleph_bft::{DefaultMultiKeychain, NodeCount, NodeIndex, TaskHandle};
+use aleph_primitives::ApiError;
 use futures::{channel::oneshot, Future, TryFutureExt};
 use sc_client_api::{backend::Backend, BlockchainEvents, Finalizer, LockImportRun, TransactionFor};
 use sc_consensus::BlockImport;
 use sc_service::SpawnTaskHandle;
-use sp_api::{NumberFor, ProvideRuntimeApi};
+use sp_api::{NumberFor, ProvideRuntimeApi, ConstructRuntimeApi};
 use sp_blockchain::{HeaderBackend, HeaderMetadata};
 use sp_consensus::SelectChain;
 use sp_runtime::{
+    generic::BlockId,
     traits::{BlakeTwo256, Block},
     RuntimeAppPublic, SaturatedConversion,
 };
@@ -57,8 +59,8 @@ use sp_core::crypto::KeyTypeId;
 pub const KEY_TYPE: KeyTypeId = KeyTypeId(*b"alp0");
 pub use crate::metrics::Metrics;
 use crate::party::{run_consensus_party, AlephParams};
+use aleph_primitives::{AlephSessionApi, MillisecsPerBlock, SessionPeriod, UnitCreationDelay};
 pub use aleph_primitives::{AuthorityId, AuthorityPair, AuthoritySignature};
-use aleph_primitives::{MillisecsPerBlock, SessionPeriod, UnitCreationDelay};
 use futures::channel::mpsc;
 
 /// Ties an authority identification and a cryptography keystore together for use in
@@ -104,32 +106,68 @@ impl AuthorityKeystore {
     }
 }
 
-pub trait ClientForAleph<B, BE>:
-    LockImportRun<B, BE>
-    + Finalizer<B, BE>
-    + ProvideRuntimeApi<B>
-    + BlockImport<B, Transaction = TransactionFor<BE, B>, Error = sp_consensus::Error>
-    + HeaderBackend<B>
-    + HeaderMetadata<B, Error = sp_blockchain::Error>
-    + BlockchainEvents<B>
+pub trait ClientForAleph<B, BE>
 where
     BE: Backend<B>,
     B: Block,
 {
+    fn next_session_authorities(
+        &self,
+        block_id: &BlockId<B>,
+    ) -> Result<Result<Vec<AuthorityId>, ApiError>, sp_api::ApiError>;
+    fn authorities(&self, block_id: &BlockId<B>) -> Result<Vec<AuthorityId>, sp_api::ApiError>;
+    fn session_period(&self, block_id: &BlockId<B>) -> Result<SessionPeriod, sp_api::ApiError>;
+    fn millisecs_per_block(
+        &self,
+        block_id: &BlockId<B>,
+    ) -> Result<MillisecsPerBlock, sp_api::ApiError>;
 }
 
-impl<B, BE, T> ClientForAleph<B, BE> for T
+// use sc_client_api::{backend::Backend, BlockchainEvents, Finalizer, LockImportRun, TransactionFor};
+// use sp_api::{ProvideRuntimeApi};
+// use sp_blockchain::{HeaderBackend, HeaderMetadata};
+// use sc_consensus::BlockImport;
+
+// B: Block,
+//     BE: Backend<B>,
+//     C:     LockImportRun<B, BE>
+//     + Finalizer<B, BE>
+//     + ProvideRuntimeApi<B>
+//     + BlockImport<B, Transaction = TransactionFor<BE, B>, Error = sp_consensus::Error>
+//     + HeaderBackend<B>
+//     + HeaderMetadata<B, Error = sp_blockchain::Error>
+//     + BlockchainEvents<B>
+//         + Send
+//         + Sync
+//         + 'static,
+
+impl<B, BE, RA, E> ClientForAleph<B, BE> for sc_service::client::Client<BE, E, B, RA>
 where
     BE: Backend<B>,
     B: Block,
-    T: LockImportRun<B, BE>
-        + Finalizer<B, BE>
-        + ProvideRuntimeApi<B>
-        + HeaderBackend<B>
-        + HeaderMetadata<B, Error = sp_blockchain::Error>
-        + BlockchainEvents<B>
-        + BlockImport<B, Transaction = TransactionFor<BE, B>, Error = sp_consensus::Error>,
+    // <RA as ConstructRuntimeApi<B, >>::RuntimeApi: aleph_primitives::AlephSessionApi,
 {
+    fn next_session_authorities(
+        &self,
+        block_id: &BlockId<B>,
+    ) -> Result<Result<Vec<AuthorityId>, ApiError>, sp_api::ApiError> {
+        self.runtime_api().next_session_authorities(block_id)
+    }
+
+    fn authorities(&self, block_id: &BlockId<B>) -> Result<Vec<AuthorityId>, sp_api::ApiError> {
+        self.runtime_api().authorities(block_id)
+    }
+
+    fn session_period(&self, block_id: &BlockId<B>) -> Result<SessionPeriod, sp_api::ApiError> {
+        self.runtime_api().session_period(block_id)
+    }
+
+    fn millisecs_per_block(
+        &self,
+        block_id: &BlockId<B>,
+    ) -> Result<MillisecsPerBlock, sp_api::ApiError> {
+        self.runtime_api().millisecs_per_block(block_id)
+    }
 }
 
 type Hasher = hash::Wrapper<BlakeTwo256>;

@@ -3,11 +3,14 @@ use core::result::Result;
 use log::{debug, error, warn};
 use sc_client_api::Backend;
 use sp_api::{BlockId, NumberFor};
+use sp_blockchain::HeaderBackend;
 use sp_runtime::{
     traits::{Block, Header},
     Justification,
 };
 use std::sync::Arc;
+
+use sc_client_api::{Finalizer, LockImportRun};
 
 pub(crate) fn finalize_block<BE, B, C>(
     client: Arc<C>,
@@ -18,7 +21,7 @@ pub(crate) fn finalize_block<BE, B, C>(
 where
     B: Block,
     BE: Backend<B>,
-    C: crate::ClientForAleph<B, BE>,
+    C: LockImportRun<B, BE> + Finalizer<B, BE> + HeaderBackend<B> + Send + Sync + 'static,
 {
     let status = client.info();
     if status.finalized_number >= block_number {
@@ -49,7 +52,7 @@ pub(crate) fn should_finalize<BE, B, C>(
 where
     B: Block,
     BE: Backend<B>,
-    C: crate::ClientForAleph<B, BE>,
+    C: LockImportRun<B, BE> + Finalizer<B, BE> + HeaderBackend<B> + Send + Sync + 'static,
 {
     // this early return is for optimization reasons only.
     if new_data.hash == last_finalized {

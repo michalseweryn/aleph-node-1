@@ -4,6 +4,7 @@ use codec::{Decode, Encode};
 use futures::channel::{mpsc, oneshot};
 use lru::LruCache;
 use parking_lot::Mutex;
+use sc_client_api::{backend::Backend, BlockchainEvents};
 use sp_consensus::SelectChain;
 use sp_runtime::traits::{Block as BlockT, Header as HeaderT, NumberFor};
 use std::{
@@ -14,11 +15,12 @@ use std::{
     time::Duration,
 };
 
+use sp_blockchain::HeaderBackend;
+
 const REFRESH_INTERVAL: u64 = 100;
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender};
 use futures_timer::Delay;
 use log::{debug, trace};
-use sc_client_api::backend::Backend;
 use sp_runtime::generic::BlockId;
 use tokio::stream::StreamExt;
 
@@ -54,7 +56,7 @@ pub(crate) trait AlephNetworkMessage<B: BlockT> {
 pub(crate) struct DataStore<B, C, BE, Message>
 where
     B: BlockT,
-    C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
+    C: HeaderBackend<B> + BlockchainEvents<B> + Send + Sync + 'static,
     BE: Backend<B> + 'static,
     Message: AlephNetworkMessage<B> + std::fmt::Debug,
 {
@@ -72,7 +74,7 @@ where
 impl<B, C, BE, Message> DataStore<B, C, BE, Message>
 where
     B: BlockT,
-    C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
+    C: HeaderBackend<B> + BlockchainEvents<B> + Send + Sync + 'static,
     BE: Backend<B> + 'static,
     Message: AlephNetworkMessage<B> + std::fmt::Debug,
 {

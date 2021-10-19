@@ -3,7 +3,6 @@ use crate::{run_consensus_party, AlephConfig, AlephParams};
 use aleph_primitives::SessionPeriod;
 use core::time::Duration;
 use futures::FutureExt;
-// use sc_executor::native_executor_instance;
 use sc_keystore::LocalKeystore;
 use sc_service::{config::TaskType, BasePath, TaskExecutor, TaskManager};
 use std::{path::PathBuf, sync::Arc};
@@ -15,23 +14,11 @@ const ACCOUNT_IDS: [&str; 4] = [
     "5F4H97f7nQovyrbiq4ZetaaviNwThSVcFobcA5aGab6167dK",
 ];
 
-const CHAIN_ID: &str = "test";
-
 fn base_path(i: usize) -> BasePath {
     BasePath::Permanenent(PathBuf::from(format!("/tmp/alephtest{}/", i)))
 }
 
-use sp_runtime::traits::Header as HeaderT;
-// use substrate_test_runtime::TestAPI;
-use substrate_test_runtime_client::{
-    prelude::*,
-    // runtime::{DecodeFails, Header, RuntimeApi, Transfer},
-    DefaultTestClientBuilderExt,
-    TestClientBuilder,
-};
-
-// use sc_block_builder::BlockBuilderProvider;
-use sp_runtime::traits::Block as BlockT;
+use substrate_test_runtime_client::{prelude::*, TestClientBuilder};
 
 pub(crate) mod client;
 
@@ -47,7 +34,7 @@ async fn run() {
         let builder = TestClientBuilder::with_default_backend();
         let backend = builder.backend();
         let select_chain = sc_consensus::LongestChain::new(backend.clone());
-        let mut client = Arc::new(client::TestClient::new(builder.build()));
+        let client = Arc::new(client::TestClient::new(builder.build()));
 
         let (justification_tx, justification_rx) = futures::channel::mpsc::unbounded();
         let keystore = Arc::new(LocalKeystore::open(base_path(i).path(), None).unwrap());
@@ -58,11 +45,11 @@ async fn run() {
             .enable_all()
             .build()
             .unwrap();
-        let runtime_handle = tokio_runtime.handle().clone();
 
         let task_executor = move |fut, task_type| match task_type {
-            TaskType::Async => runtime_handle.spawn(fut).map(drop),
-            TaskType::Blocking => runtime_handle
+            TaskType::Async => tokio_runtime.handle().spawn(fut).map(drop),
+            TaskType::Blocking => tokio_runtime
+                .handle()
                 .spawn_blocking(move || futures::executor::block_on(fut))
                 .map(drop),
         };
@@ -80,7 +67,7 @@ async fn run() {
                 metrics: None,
                 session_period: SessionPeriod(400),
                 millisecs_per_block: Default::default(),
-                unit_creation_delay: Default::default()
+                unit_creation_delay: Default::default(),
             },
         }));
     }

@@ -249,7 +249,7 @@ pub(crate) fn reduce_header_to_num<B, C>(
 ) -> B::Header
 where
     B: BlockT,
-    C: HeaderMetadata<B> + sc_client_api::HeaderBackend<B> +  Send + Sync + 'static,
+    C: HeaderMetadata<B> + sc_client_api::HeaderBackend<B> + Send + Sync + 'static,
 {
     let mut curr_header = header;
     while curr_header.number() > &num {

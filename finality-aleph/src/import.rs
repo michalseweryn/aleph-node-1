@@ -7,17 +7,17 @@ use codec::Decode;
 use futures::channel::mpsc::{TrySendError, UnboundedSender};
 use log::debug;
 use sc_client_api::backend::Backend;
+use sc_client_api::{Finalizer, HeaderBackend, LockImportRun};
 use sc_consensus::{
     BlockCheckParams, BlockImport, BlockImportParams, ImportResult, JustificationImport,
 };
-use sp_api::{TransactionFor, ProvideRuntimeApi, ApiExt, HeaderT};
+use sp_api::{HeaderT, ProvideRuntimeApi, TransactionFor};
 use sp_consensus::Error as ConsensusError;
 use sp_runtime::{
-    traits::{Block as BlockT, Header, NumberFor},
+    traits::{Block as BlockT, NumberFor},
     Justification,
 };
 use std::{collections::HashMap, marker::PhantomData, sync::Arc, time::Instant};
-use sc_client_api::{LockImportRun, Finalizer, HeaderBackend, StateBackend};
 
 pub struct AlephBlockImport<Block, Be, I>
 where
@@ -167,7 +167,12 @@ impl<Block, Be, I> JustificationImport<Block> for AlephBlockImport<Block, Be, I>
 where
     Block: BlockT,
     Be: Backend<Block>,
-    I: LockImportRun<Block, Be> + Finalizer<Block, Be> + HeaderBackend<Block> + Send + Sync + 'static,
+    I: LockImportRun<Block, Be>
+        + Finalizer<Block, Be>
+        + HeaderBackend<Block>
+        + Send
+        + Sync
+        + 'static,
 {
     type Error = ConsensusError;
 

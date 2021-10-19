@@ -8,8 +8,8 @@ use crate::{
 use aleph_bft::{Index, KeyBox as _, NodeIndex};
 use codec::DecodeAll;
 use futures::{
-    channel::{mpsc},
-    stream::{Stream, SelectAll},
+    channel::mpsc,
+    stream::{SelectAll, Stream},
     StreamExt,
 };
 use sc_network::{Event, ObservedRole, PeerId as ScPeerId, ReputationChange};
@@ -17,8 +17,8 @@ use sp_api::NumberFor;
 use sp_core::Encode;
 use sp_keystore::{testing::KeyStore, CryptoStore};
 use sp_runtime::traits::Block as BlockT;
-use std::{borrow::Cow, pin::Pin, sync::Arc};
 use std::collections::HashMap;
+use std::{borrow::Cow, pin::Pin, sync::Arc};
 use substrate_test_runtime::Block;
 
 #[derive(Debug)]
@@ -36,21 +36,30 @@ impl<B: BlockT> TestNetworkCommand<B> {
     fn unwrap_send_message(self) -> (PeerId, Cow<'static, str>, Vec<u8>) {
         match self {
             TestNetworkCommand::SendMessage(peer_id, protocol, data) => (peer_id, protocol, data),
-            _ => panic!("called `TestNetworkCommand::unwrap_send_message()` on `{:?}`", self)
+            _ => panic!(
+                "called `TestNetworkCommand::unwrap_send_message()` on `{:?}`",
+                self
+            ),
         }
     }
 
     fn unwrap_add_set_reserved(self) -> (PeerId, Cow<'static, str>) {
         match self {
             TestNetworkCommand::AddSetReserved(peer_id, protocol) => (peer_id, protocol),
-            _ => panic!("called `TestNetworkCommand::unwrap_add_set_reserved()` on `{:?}`", self)
+            _ => panic!(
+                "called `TestNetworkCommand::unwrap_add_set_reserved()` on `{:?}`",
+                self
+            ),
         }
     }
 
     fn unwrap_remove_set_reserved(self) -> (PeerId, Cow<'static, str>) {
         match self {
             TestNetworkCommand::RemoveSetReserved(peer_id, protocol) => (peer_id, protocol),
-            _ => panic!("called `TestNetworkCommand::unwrap_remove_set_reserved()` on `{:?}`", self)
+            _ => panic!(
+                "called `TestNetworkCommand::unwrap_remove_set_reserved()` on `{:?}`",
+                self
+            ),
         }
     }
 }
@@ -73,7 +82,7 @@ impl<T> MemoizingReceiver<T> {
     fn new(rx: mpsc::UnboundedReceiver<T>) -> Self {
         MemoizingReceiver {
             data: Vec::new(),
-            rx
+            rx,
         }
     }
     fn try_fetch_many(&mut self) {
@@ -91,7 +100,7 @@ impl<T> MemoizingReceiver<T> {
         self.data.push(item);
     }
 
-    fn iter(&mut self) -> impl Iterator<Item=&T> {
+    fn iter(&mut self) -> impl Iterator<Item = &T> {
         self.try_fetch_many();
         self.data.iter()
     }
@@ -145,7 +154,8 @@ impl<B: BlockT> Network<B> for TestNetwork<B> {
     }
 
     fn _announce(&self, block: <B as BlockT>::Hash, associated_data: Option<Vec<u8>>) {
-        self.command_tx.unbounded_send(TestNetworkCommand::Announce(block, associated_data))
+        self.command_tx
+            .unbounded_send(TestNetworkCommand::Announce(block, associated_data))
             .unwrap();
     }
 
@@ -192,46 +202,47 @@ pub(crate) struct TestNetworkHub<B: BlockT> {
 
 impl<B: BlockT> TestNetworkHub<B> {
     pub(crate) fn new(n: usize) -> (Self, Vec<TestNetwork<B>>) {
-        let peer_ids : Vec<PeerId> = (0..n).map(|_| ScPeerId::random().into()).collect();
-        let (networks, all_receivers) = peer_ids.iter().cloned().map(|peer_id| {
-            let (network, receivers) = TestNetwork::new(peer_id);
-            (network, (peer_id, receivers))
-        }).unzip();
-        let hub = TestNetworkHub {
-            all_receivers,
-        };
+        let peer_ids: Vec<PeerId> = (0..n).map(|_| ScPeerId::random().into()).collect();
+        let (networks, all_receivers) = peer_ids
+            .iter()
+            .cloned()
+            .map(|peer_id| {
+                let (network, receivers) = TestNetwork::new(peer_id);
+                (network, (peer_id, receivers))
+            })
+            .unzip();
+        let hub = TestNetworkHub { all_receivers };
         (hub, networks)
     }
     pub(crate) async fn run(self) {
-        let (mut all_event_sinks, mut peers_commands) : (HashMap<_, _>, SelectAll<_>) =
-            self.all_receivers
-                .into_iter()
-                .map(|(peer_id, receivers)| {
-                    (
-                        (peer_id, receivers.event_sinks),
-                        receivers.command_rx.map(move |cmd| (peer_id.clone(), cmd))
-                    )
-                }).unzip();
-        while let Some((sender, cmd))  = peers_commands.next().await {
-            match cmd {
-                TestNetworkCommand::SendMessage(recipient, protocol, data) => {
-                    for event_sink in all_event_sinks.get_mut(&recipient).unwrap().iter() {
-                        event_sink.unbounded_send(Event::NotificationsReceived {
+        let (mut all_event_sinks, mut peers_commands): (HashMap<_, _>, SelectAll<_>) = self
+            .all_receivers
+            .into_iter()
+            .map(|(peer_id, receivers)| {
+                (
+                    (peer_id, receivers.event_sinks),
+                    receivers.command_rx.map(move |cmd| (peer_id, cmd)),
+                )
+            })
+            .unzip();
+        while let Some((sender, cmd)) = peers_commands.next().await {
+            if let TestNetworkCommand::SendMessage(recipient, protocol, data) = cmd {
+                for event_sink in all_event_sinks.get_mut(&recipient).unwrap().iter() {
+                    event_sink
+                        .unbounded_send(Event::NotificationsReceived {
                             remote: sender.into(),
-                            messages: vec![(protocol.clone(), data.clone().into())]
-                        }).unwrap();
-                    }
+                            messages: vec![(protocol.clone(), data.clone().into())],
+                        })
+                        .unwrap();
                 }
-                _ => {}
             }
         }
     }
-
 }
 
 struct Authority {
     peer_id: PeerId,
-    keychain: MultiKeychain
+    keychain: MultiKeychain,
 }
 
 async fn generate_authorities(ss: &[String]) -> Vec<Authority> {
@@ -252,7 +263,10 @@ async fn generate_authorities(ss: &[String]) -> Vec<Authority> {
             authorities: auth_ids.clone(),
         };
         let keychain = MultiKeychain::new(keybox);
-        authorities.push(Authority { peer_id: ScPeerId::random().into(), keychain });
+        authorities.push(Authority {
+            peer_id: ScPeerId::random().into(),
+            keychain,
+        });
     }
     assert_eq!(key_store.keys(KEY_TYPE).await.unwrap().len(), 3 * ss.len());
     authorities
@@ -261,13 +275,12 @@ async fn generate_authorities(ss: &[String]) -> Vec<Authority> {
 type MockData = Vec<u8>;
 
 struct TestData {
-    network: TestNetwork<Block>,
+    _network: TestNetwork<Block>,
     receivers: TestNetworkReceivers<Block>,
     authorities: Vec<Authority>,
     _consensus_network_handle: tokio::task::JoinHandle<()>,
     data_network: DataNetwork<MockData>,
 }
-
 
 const PROTOCOL_NAME: &str = "/test/1";
 
@@ -297,7 +310,7 @@ async fn prepare_one_session_test_data() -> TestData {
     receivers.first_event_sink().await;
 
     TestData {
-        network,
+        _network: network,
         receivers,
         authorities,
         _consensus_network_handle: consensus_network_handle,
@@ -312,7 +325,11 @@ async fn test_network_event_sync_connnected() {
     data.receivers.send_event(Event::SyncConnected {
         remote: bob_peer_id.into(),
     });
-    let (peer_id, protocol) = data.receivers.next_command().await.unwrap_add_set_reserved();
+    let (peer_id, protocol) = data
+        .receivers
+        .next_command()
+        .await
+        .unwrap_add_set_reserved();
     assert_eq!(peer_id, bob_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
     assert!(data.receivers.command_rx.try_next().is_err());
@@ -325,7 +342,11 @@ async fn test_network_event_sync_disconnected() {
     data.receivers.send_event(Event::SyncDisconnected {
         remote: charlie_peer_id.into(),
     });
-    let (peer_id, protocol) = data.receivers.next_command().await.unwrap_remove_set_reserved();
+    let (peer_id, protocol) = data
+        .receivers
+        .next_command()
+        .await
+        .unwrap_remove_set_reserved();
     assert_eq!(peer_id, charlie_peer_id);
     assert_eq!(protocol, PROTOCOL_NAME);
     assert!(data.receivers.command_rx.try_next().is_err());
@@ -476,15 +497,15 @@ async fn test_send() {
         .send(note.clone(), Recipient::Target(bob_node_id))
         .expect("sending works");
     let (peer_id, protocol, message) = data.receivers.next_command().await.unwrap_send_message();
-            assert_eq!(peer_id, bob_peer_id);
-            assert_eq!(protocol, PROTOCOL_NAME);
-            match InternalMessage::<MockData>::decode_all(message.as_slice()) {
-                Ok(InternalMessage::Data(session_id, data)) => {
-                    assert_eq!(session_id, cur_session_id);
-                    assert_eq!(data, note);
-                }
-                _ => panic!("Expected a properly encoded message"),
-            }
+    assert_eq!(peer_id, bob_peer_id);
+    assert_eq!(protocol, PROTOCOL_NAME);
+    match InternalMessage::<MockData>::decode_all(message.as_slice()) {
+        Ok(InternalMessage::Data(session_id, data)) => {
+            assert_eq!(session_id, cur_session_id);
+            assert_eq!(data, note);
+        }
+        _ => panic!("Expected a properly encoded message"),
+    }
     assert!(data.receivers.command_rx.try_next().is_err());
 }
 
@@ -528,11 +549,11 @@ async fn test_broadcast() {
         let (_, protocol, message) = data.receivers.next_command().await.unwrap_send_message();
         assert_eq!(protocol, PROTOCOL_NAME);
         match InternalMessage::<MockData>::decode_all(message.as_slice()) {
-                    Ok(InternalMessage::Data(session_id, data)) => {
-                        assert_eq!(session_id, cur_session_id);
-                        assert_eq!(data, note);
-                    }
-                    _ => panic!("Expected a properly encoded message"),
+            Ok(InternalMessage::Data(session_id, data)) => {
+                assert_eq!(session_id, cur_session_id);
+                assert_eq!(data, note);
+            }
+            _ => panic!("Expected a properly encoded message"),
         }
     }
     assert!(data.receivers.command_rx.try_next().is_err());

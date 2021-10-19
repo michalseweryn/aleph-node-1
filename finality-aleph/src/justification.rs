@@ -10,6 +10,7 @@ use futures_timer::Delay;
 use log::{debug, error, warn};
 use parking_lot::Mutex;
 use sc_client_api::backend::Backend;
+use sc_client_api::{Finalizer, HeaderBackend, LockImportRun};
 use sp_api::{BlockId, BlockT, NumberFor};
 use sp_keystore::SyncCryptoStorePtr;
 use sp_runtime::traits::Header;
@@ -19,7 +20,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::time::timeout;
-use sc_client_api::{LockImportRun, Finalizer, HeaderBackend};
 
 #[derive(Clone, Encode, Decode, Debug)]
 pub struct AlephJustification {
@@ -61,7 +61,8 @@ where
     pub number: NumberFor<Block>,
 }
 
-pub struct JustificationHandler<B, N, C, BE> where
+pub struct JustificationHandler<B, N, C, BE>
+where
     B: BlockT,
     N: network::Network<B> + 'static,
     C: LockImportRun<B, BE> + Finalizer<B, BE> + HeaderBackend<B> + Send + Sync + 'static,

@@ -1,14 +1,26 @@
-use crate::{aggregator::BlockSignatureAggregator, data_io::{
-    reduce_header_to_num, refresh_best_chain, AlephData, AlephDataFor, DataIO, DataStore,
-}, default_aleph_config, finalization::should_finalize, justification::{
-    AlephJustification, ChainCadence, JustificationHandler, JustificationNotification,
-}, last_block_of_session, metrics::Checkpoint, network, network::{
-    split_network, AlephNetworkData, ConsensusNetwork, DataNetwork, NetworkData, SessionManager,
-}, session_id_from_block_num, AuthorityId, Future, KeyBox, Metrics, MultiKeychain, NodeIndex, SessionId, SessionMap, KEY_TYPE, ClientForAleph};
+use crate::{
+    aggregator::BlockSignatureAggregator,
+    data_io::{
+        reduce_header_to_num, refresh_best_chain, AlephData, AlephDataFor, DataIO, DataStore,
+    },
+    default_aleph_config,
+    finalization::should_finalize,
+    justification::{
+        AlephJustification, ChainCadence, JustificationHandler, JustificationNotification,
+    },
+    last_block_of_session,
+    metrics::Checkpoint,
+    network,
+    network::{
+        split_network, AlephNetworkData, ConsensusNetwork, DataNetwork, NetworkData, SessionManager,
+    },
+    session_id_from_block_num, AuthorityId, ClientForAleph, Future, KeyBox, Metrics, MultiKeychain,
+    NodeIndex, SessionId, SessionMap, KEY_TYPE,
+};
 use sp_keystore::{SyncCryptoStore, SyncCryptoStorePtr};
 
 use aleph_bft::{DelayConfig, OrderedBatch, SpawnHandle};
-use aleph_primitives::{AlephSessionApi, SessionPeriod, UnitCreationDelay};
+use aleph_primitives::{SessionPeriod, UnitCreationDelay};
 use futures_timer::Delay;
 
 use futures::{
@@ -419,9 +431,7 @@ where
     async fn run_session(&mut self, session_id: SessionId) {
         let authorities = {
             if session_id == SessionId(0) {
-                self.client
-                    .authorities(&BlockId::Number(0.into()))
-                    .unwrap()
+                self.client.authorities(&BlockId::Number(0.into())).unwrap()
             } else {
                 let last_prev =
                     last_block_of_session::<B>(SessionId(session_id.0 - 1), self.session_period);

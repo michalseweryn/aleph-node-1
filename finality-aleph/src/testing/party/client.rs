@@ -1,10 +1,9 @@
 use sp_api::{ApiRef, NumberFor, ProvideRuntimeApi};
 use sp_runtime::{generic::BlockId, traits::Header as HeaderT, Justification};
 use std::marker::PhantomData;
-use substrate_test_runtime_client::prelude::*;
 
 use aleph_primitives::MillisecsPerBlock;
-use aleph_primitives::{AlephSessionApi, ApiError, AuthorityId};
+use aleph_primitives::{ApiError, AuthorityId};
 use sc_client_api::blockchain::{BlockStatus, CachedHeaderMetadata, Error, Info};
 use sc_client_api::{
     Backend, BlockchainEvents, ClientImportOperation, FinalityNotifications, Finalizer,
@@ -164,6 +163,7 @@ impl<B: BlockT, C: BlockchainEvents<B>, BE> BlockchainEvents<B> for TestClient<C
         self.0.finality_notification_stream()
     }
 
+    #[allow(clippy::type_complexity)]
     fn storage_changes_notification_stream(
         &self,
         filter_keys: Option<&[StorageKey]>,
@@ -179,19 +179,25 @@ where
     BE: Backend<B>,
     B: BlockT,
 {
-    fn next_session_authorities(&self, block_id: &BlockId<B>) -> Result<Result<Vec<AuthorityId>, ApiError>, sp_api::ApiError> {
+    fn next_session_authorities(
+        &self,
+        _block_id: &BlockId<B>,
+    ) -> Result<Result<Vec<AuthorityId>, ApiError>, sp_api::ApiError> {
         todo!()
     }
 
-    fn authorities(&self, block_id: &BlockId<B>) -> Result<Vec<AuthorityId>, sp_api::ApiError> {
+    fn authorities(&self, _block_id: &BlockId<B>) -> Result<Vec<AuthorityId>, sp_api::ApiError> {
         todo!()
     }
 
-    fn session_period(&self, block_id: &BlockId<B>) -> Result<SessionPeriod, sp_api::ApiError> {
+    fn session_period(&self, _block_id: &BlockId<B>) -> Result<SessionPeriod, sp_api::ApiError> {
         todo!()
     }
 
-    fn millisecs_per_block(&self, block_id: &BlockId<B>) -> Result<MillisecsPerBlock, sp_api::ApiError> {
+    fn millisecs_per_block(
+        &self,
+        _block_id: &BlockId<B>,
+    ) -> Result<MillisecsPerBlock, sp_api::ApiError> {
         todo!()
     }
 }

@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::time::timeout;
+use sc_client_api::{LockImportRun, Finalizer, HeaderBackend};
 
 #[derive(Clone, Encode, Decode, Debug)]
 pub struct AlephJustification {
@@ -60,11 +61,10 @@ where
     pub number: NumberFor<Block>,
 }
 
-pub(crate) struct JustificationHandler<B, N, C, BE>
-where
+pub struct JustificationHandler<B, N, C, BE> where
     B: BlockT,
     N: network::Network<B> + 'static,
-    C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
+    C: LockImportRun<B, BE> + Finalizer<B, BE> + HeaderBackend<B> + Send + Sync + 'static,
     BE: Backend<B> + 'static,
 {
     session_authorities: Arc<Mutex<SessionMap>>,
@@ -82,7 +82,7 @@ impl<B, N, C, BE> JustificationHandler<B, N, C, BE>
 where
     B: BlockT,
     N: network::Network<B> + 'static,
-    C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
+    C: LockImportRun<B, BE> + Finalizer<B, BE> + HeaderBackend<B> + Send + Sync + 'static,
     BE: Backend<B> + 'static,
 {
     pub(crate) fn new(

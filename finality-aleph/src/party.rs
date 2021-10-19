@@ -1,22 +1,10 @@
-use crate::{
-    aggregator::BlockSignatureAggregator,
-    data_io::{
-        reduce_header_to_num, refresh_best_chain, AlephData, AlephDataFor, DataIO, DataStore,
-    },
-    default_aleph_config,
-    finalization::should_finalize,
-    justification::{
-        AlephJustification, ChainCadence, JustificationHandler, JustificationNotification,
-    },
-    last_block_of_session,
-    metrics::Checkpoint,
-    network,
-    network::{
-        split_network, AlephNetworkData, ConsensusNetwork, DataNetwork, NetworkData, SessionManager,
-    },
-    session_id_from_block_num, AuthorityId, Future, KeyBox, Metrics, MultiKeychain, NodeIndex,
-    SessionId, SessionMap, KEY_TYPE,
-};
+use crate::{aggregator::BlockSignatureAggregator, data_io::{
+    reduce_header_to_num, refresh_best_chain, AlephData, AlephDataFor, DataIO, DataStore,
+}, default_aleph_config, finalization::should_finalize, justification::{
+    AlephJustification, ChainCadence, JustificationHandler, JustificationNotification,
+}, last_block_of_session, metrics::Checkpoint, network, network::{
+    split_network, AlephNetworkData, ConsensusNetwork, DataNetwork, NetworkData, SessionManager,
+}, session_id_from_block_num, AuthorityId, Future, KeyBox, Metrics, MultiKeychain, NodeIndex, SessionId, SessionMap, KEY_TYPE, ClientForAleph};
 use sp_keystore::{SyncCryptoStore, SyncCryptoStorePtr};
 
 use aleph_bft::{DelayConfig, OrderedBatch, SpawnHandle};
@@ -52,7 +40,6 @@ where
     B: Block,
     N: network::Network<B> + 'static,
     C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
-    C::Api: aleph_primitives::AlephSessionApi<B>,
     BE: Backend<B> + 'static,
     SC: SelectChain<B> + 'static,
 {
@@ -146,7 +133,7 @@ fn run_justification_handler<B, N, C, BE>(
 ) -> mpsc::UnboundedSender<JustificationNotification<B>>
 where
     N: network::Network<B> + 'static,
-    C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
+    C: ClientForAleph<B, BE> + Send + Sync + 'static,
     BE: Backend<B> + 'static,
     B: Block,
 {
@@ -165,8 +152,7 @@ where
 struct ConsensusParty<B, C, BE, SC>
 where
     B: Block,
-    C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
-    C::Api: aleph_primitives::AlephSessionApi<B>,
+    C: ClientForAleph<B, BE> + Send + Sync + 'static,
     BE: Backend<B> + 'static,
     SC: SelectChain<B> + 'static,
     NumberFor<B>: From<u32>,
@@ -195,7 +181,6 @@ async fn run_aggregator<B, C, BE>(
 ) where
     B: Block,
     C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
-    C::Api: aleph_primitives::AlephSessionApi<B>,
     BE: Backend<B> + 'static,
 {
     let mut last_finalized = client.info().finalized_hash;
@@ -260,8 +245,7 @@ async fn run_aggregator<B, C, BE>(
 impl<B, C, BE, SC> ConsensusParty<B, C, BE, SC>
 where
     B: Block,
-    C: crate::ClientForAleph<B, BE> + Send + Sync + 'static,
-    C::Api: aleph_primitives::AlephSessionApi<B>,
+    C: ClientForAleph<B, BE> + Send + Sync + 'static,
     BE: Backend<B> + 'static,
     SC: SelectChain<B> + 'static,
     NumberFor<B>: From<u32>,
@@ -436,7 +420,6 @@ where
         let authorities = {
             if session_id == SessionId(0) {
                 self.client
-                    .runtime_api()
                     .authorities(&BlockId::Number(0.into()))
                     .unwrap()
             } else {
@@ -446,7 +429,6 @@ where
                 // The reason is that we are not guaranteed to have the first block of new session available yet.
                 match self
                     .client
-                    .runtime_api()
                     .next_session_authorities(&BlockId::Number(last_prev))
                 {
                     Ok(authorities) => authorities

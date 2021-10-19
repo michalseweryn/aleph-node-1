@@ -17,7 +17,7 @@ use sp_consensus::CacheKeyId;
 use sp_runtime::traits::Block as BlockT;
 use std::collections::HashMap;
 
-use crate::{ClientForAleph, SessionPeriod};
+use crate::{ProvideAlephSessionApi, SessionPeriod};
 
 use async_trait::async_trait;
 
@@ -174,37 +174,24 @@ impl<B: BlockT, C: BlockchainEvents<B>, BE> BlockchainEvents<B> for TestClient<C
     }
 }
 
-impl<B: BlockT, C, BE> ClientForAleph<B, BE> for TestClient<C, BE>
+impl<B: BlockT, C, BE> ProvideAlephSessionApi<B> for TestClient<C, BE>
 where
     BE: Backend<B>,
     B: BlockT,
-    C: LockImportRun<B, BE>
-        + Finalizer<B, BE>
-        + ProvideRuntimeApi<B>
-        + HeaderBackend<B>
-        + HeaderMetadata<B, Error = sp_blockchain::Error>
-        + BlockchainEvents<B>
-        + BlockImport<B, Transaction = TransactionFor<BE, B>, Error = sp_consensus::Error>,
 {
-    fn next_session_authorities(
-        &self,
-        block_id: &BlockId<B>,
-    ) -> Result<Result<Vec<AuthorityId>, ApiError>, sp_api::ApiError> {
-        self.runtime_api().next_session_authorities(block_id)
+    fn next_session_authorities(&self, block_id: &BlockId<B>) -> Result<Result<Vec<AuthorityId>, ApiError>, sp_api::ApiError> {
+        todo!()
     }
 
     fn authorities(&self, block_id: &BlockId<B>) -> Result<Vec<AuthorityId>, sp_api::ApiError> {
-        self.runtime_api().authorities(block_id)
+        todo!()
     }
 
     fn session_period(&self, block_id: &BlockId<B>) -> Result<SessionPeriod, sp_api::ApiError> {
-        self.runtime_api().session_period(block_id)
+        todo!()
     }
 
-    fn millisecs_per_block(
-        &self,
-        block_id: &BlockId<B>,
-    ) -> Result<MillisecsPerBlock, sp_api::ApiError> {
-        self.runtime_api().millisecs_per_block(block_id)
+    fn millisecs_per_block(&self, block_id: &BlockId<B>) -> Result<MillisecsPerBlock, sp_api::ApiError> {
+        todo!()
     }
 }

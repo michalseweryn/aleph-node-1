@@ -58,7 +58,7 @@ impl<B: BlockT> TestNetworkCommand<B> {
 type EventSink = mpsc::UnboundedSender<Event>;
 
 #[derive(Clone)]
-struct TestNetwork<B: BlockT> {
+pub(crate) struct TestNetwork<B: BlockT> {
     event_sink_tx: mpsc::UnboundedSender<EventSink>,
     command_tx: mpsc::UnboundedSender<TestNetworkCommand<B>>,
     peer_id: PeerId,

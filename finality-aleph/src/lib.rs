@@ -6,11 +6,9 @@ pub use aleph_bft::default_config as default_aleph_config;
 use aleph_bft::{DefaultMultiKeychain, NodeCount, NodeIndex, TaskHandle};
 use aleph_primitives::ApiError;
 use futures::{channel::oneshot, Future, TryFutureExt};
-use sc_client_api::{backend::Backend, BlockchainEvents, Finalizer, LockImportRun, TransactionFor};
-use sc_consensus::BlockImport;
+use sc_client_api::{backend::Backend, LockImportRun, Finalizer, HeaderBackend, BlockchainEvents, TransactionFor, CallExecutor};
 use sc_service::SpawnTaskHandle;
 use sp_api::{NumberFor, ProvideRuntimeApi, ConstructRuntimeApi};
-use sp_blockchain::{HeaderBackend, HeaderMetadata};
 use sp_consensus::SelectChain;
 use sp_runtime::{
     generic::BlockId,
@@ -62,6 +60,8 @@ use crate::party::{run_consensus_party, AlephParams};
 use aleph_primitives::{AlephSessionApi, MillisecsPerBlock, SessionPeriod, UnitCreationDelay};
 pub use aleph_primitives::{AuthorityId, AuthorityPair, AuthoritySignature};
 use futures::channel::mpsc;
+use sc_consensus::BlockImport;
+use sc_client_api::blockchain::HeaderMetadata;
 
 /// Ties an authority identification and a cryptography keystore together for use in
 /// signing that requires an authority.
@@ -106,9 +106,8 @@ impl AuthorityKeystore {
     }
 }
 
-pub trait ClientForAleph<B, BE>
+pub trait ProvideAlephSessionApi<B>
 where
-    BE: Backend<B>,
     B: Block,
 {
     fn next_session_authorities(
@@ -121,6 +120,39 @@ where
         &self,
         block_id: &BlockId<B>,
     ) -> Result<MillisecsPerBlock, sp_api::ApiError>;
+}
+
+pub trait ClientForAleph<B, BE>: LockImportRun<B, BE>
+    + Finalizer<B, BE>
+    + ProvideRuntimeApi<B>
+    + ProvideAlephSessionApi<B>
+    + BlockImport<B, Transaction = TransactionFor<BE, B>, Error = sp_consensus::Error>
+    + HeaderBackend<B>
+    + HeaderMetadata<B, Error = sp_blockchain::Error>
+    + BlockchainEvents<B>
+    + Send
+    + Sync
+    + 'static
+where
+    B: Block,
+     BE: Backend<B>,
+{ }
+
+impl<B, BE, C> ClientForAleph<B, BE> for C where
+    B: Block,
+    BE: Backend<B>,
+    C: LockImportRun<B, BE>
+    + Finalizer<B, BE>
+    + ProvideRuntimeApi<B>
+    + ProvideAlephSessionApi<B>
+    + BlockImport<B, Transaction = TransactionFor<BE, B>, Error = sp_consensus::Error>
+    + HeaderBackend<B>
+    + HeaderMetadata<B, Error = sp_blockchain::Error>
+    + BlockchainEvents<B>
+    + Send
+    + Sync
+    + 'static
+{
 }
 
 // use sc_client_api::{backend::Backend, BlockchainEvents, Finalizer, LockImportRun, TransactionFor};
@@ -141,11 +173,13 @@ where
 //         + Sync
 //         + 'static,
 
-impl<B, BE, RA, E> ClientForAleph<B, BE> for sc_service::client::Client<BE, E, B, RA>
+impl<B, BE, RA, E> ProvideAlephSessionApi<B> for sc_service::client::Client<BE, E, B, RA>
 where
     BE: Backend<B>,
     B: Block,
-    // <RA as ConstructRuntimeApi<B, >>::RuntimeApi: aleph_primitives::AlephSessionApi,
+    RA: sp_api::ConstructRuntimeApi<B, Self>,
+    <RA as ConstructRuntimeApi<B, Self>>::RuntimeApi: aleph_primitives::AlephSessionApi<B>,
+    E: CallExecutor<B, Backend=BE> + Send + Sync,
 {
     fn next_session_authorities(
         &self,
@@ -283,8 +317,7 @@ pub fn run_aleph_consensus<B: Block, BE, C, N, SC>(
 where
     BE: Backend<B> + 'static,
     N: network::Network<B> + 'static,
-    C: ClientForAleph<B, BE> + Send + Sync + 'static,
-    C::Api: aleph_primitives::AlephSessionApi<B>,
+    C: ClientForAleph<B, BE>,
     SC: SelectChain<B> + 'static,
 {
     run_consensus_party(AlephParams { config })

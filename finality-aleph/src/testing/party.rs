@@ -80,6 +80,7 @@ async fn run() {
                 metrics: None,
                 session_period: SessionPeriod(400),
                 millisecs_per_block: Default::default(),
+                unit_creation_delay: Default::default()
             },
         }));
     }
